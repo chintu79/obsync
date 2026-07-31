@@ -1,0 +1,21 @@
+[package]
+name = "obsync-httpd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+obsync-core = { path = "../core", features = ["network"] }
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["json", "multipart"] }
+tower-http = { version = "0.5", features = ["cors", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
+hex = "0.4"
+qrcode = "0.14"
+local-ip-address = "0.6"

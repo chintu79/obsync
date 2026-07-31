@@ -1,0 +1,14 @@
+[package]
+name = "obsync-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+obsync-core = { path = "../core" }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+hex = "0.4"

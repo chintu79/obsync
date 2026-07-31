@@ -1,0 +1,35 @@
+# Rust
+/target/
+
+# Android / Gradle
+/android/.gradle/
+/android/build/
+/android/app/build/
+/android/app/src/main/jniLibs/
+/android/local.properties
+/android/app/release.keystore
+*.jks
+*.keystore
+!keystore.properties.example
+
+# Node / Desktop
+/node_modules/
+/desktop/node_modules/
+/desktop/dist/
+/desktop/src-tauri/target/
+
+# Local runtime data
+*.obsync/
+.vault/
+.obsync-approved.json
+
+# IDE / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# Env / secrets
+.env
+*.env
+keystore.properties

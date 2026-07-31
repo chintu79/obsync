@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Obsync</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#fafafa;--surface:#fff;--border:#e5e5e5;--text:#171717;--text2:#737373;--accent:#2563eb;--green:#16a34a;--amber:#d97706;--red:#dc2626;font-family:system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.5}
+@media(prefers-color-scheme:dark){:root{--bg:#0a0a0a;--surface:#1a1a1a;--border:#262626;--text:#f5f5f5;--text2:#a3a3a3;--accent:#3b82f6;--green:#22c55e;--amber:#f59e0b}}
+body{background:var(--bg);color:var(--text);padding:24px;max-width:640px;margin:0 auto}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px}
+h1{font-size:20px;font-weight:600;margin-bottom:4px;letter-spacing:-0.02em}
+h2{font-size:15px;font-weight:600;margin-bottom:12px}
+.row{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;border-bottom:1px solid var(--border)}
+.row:last-child{border:0}
+.dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.green{background:var(--green)}
+.amber{background:var(--amber)}
+.red{background:var(--red)}
+.gray{background:var(--text2)}
+input{flex:1;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;outline:none}
+input:focus{border-color:var(--accent)}
+button{background:var(--accent);color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500}
+button:active{opacity:0.8}
+.btn-sm{background:transparent;color:var(--accent);border:1px solid var(--border);padding:4px 10px;font-size:12px}
+.mono{font-family:monospace;font-size:12px}
+#pairing-qr svg{width:300px;height:300px;display:inline-block}
+.mb8{margin-bottom:8px}
+.mt8{margin-top:8px}
+.gap8{display:flex;gap:8px}
+.flex{display:flex}
+.jcsb{justify-content:space-between}
+.aic{align-items:center}
+.f1{flex:1}
+.text2{color:var(--text2)}
+</style>
+</head>
+<body>
+
+<h1>Obsync</h1>
+<p class="text2 mb8" style="font-size:13px">Local-first P2P vault sync</p>
+
+<div class="card">
+  <h2>Vault</h2>
+  <div id="vault-status">No vault selected</div>
+  <div class="gap8 mt8">
+    <input type="text" id="vault-path" placeholder="~/Documents/SecondBrain" />
+    <button onclick="selectVault()">Open</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Pair with phone</h2>
+  <p class="text2 mb8" style="font-size:13px">Scan this QR code from the Obsync app to pair, or connect directly via IP.</p>
+  <div id="pairing-qr" class="text2" style="text-align:center;padding:8px">Loading QR...</div>
+  <div id="pairing-info" class="mono text2 mt8" style="font-size:12px"></div>
+</div>
+
+<div class="card">
+  <h2>Pending access requests</h2>
+  <div id="pending-list" class="text2">No pending requests</div>
+</div>
+
+<div class="card">
+  <h2>Status</h2>
+  <div id="sync-status" class="text2">Loading...</div>
+</div>
+
+<div class="card">
+  <div class="flex jcsb aic mb8">
+    <h2 style="margin:0">Files</h2>
+    <button class="btn-sm" onclick="loadFiles()">Refresh</button>
+  </div>
+  <div id="file-list" class="text2">Click Refresh to load files</div>
+</div>
+
+<div class="card">
+  <h2>Device</h2>
+  <div id="device-info" class="text2">No identity</div>
+</div>
+
+<script>
+const BASE = 'http://' + location.host + '/api';
+
+async function api(path, opts = {}) {
+  const r = await fetch(BASE + path, {
+    headers: {'Content-Type': 'application/json'},
+    ...opts
+  });
+  return r.json();
+}
+
+async function refresh() {
+  const s = await api('/status');
+  const vault = s.vault;
+  if (vault) {
+    document.getElementById('vault-status').innerHTML =
+      `<div class="flex aic gap8"><span class="dot green"></span> ${vault.file_count} files <span class="text2">· ${vault.state}</span></div>`;
+  }
+  if (s.device) {
+    document.getElementById('device-info').innerHTML =
+      `<div class="mono mb8">${s.device.device_id}</div>` +
+      `<div>Fingerprint: <span class="mono">${s.device.fingerprint}</span></div>`;
+  }
+  document.getElementById('sync-status').textContent = s.state;
+}
+
+async function selectVault() {
+  const path = document.getElementById('vault-path').value;
+  if (!path) return;
+  const r = await api('/select-vault', {
+    method: 'POST',
+    body: JSON.stringify({ path })
+  });
+  if (r.error) { alert(r.error); return; }
+  await refresh();
+  await loadFiles();
+}
+
+async function loadFiles() {
+  const files = await api('/files');
+  const el = document.getElementById('file-list');
+  if (!files.length) { el.textContent = 'No files'; return; }
+  el.innerHTML = files.slice(0, 20).map(f =>
+    `<div class="row"><span class="f1">${f.path}</span><span class="text2">${f.size < 1024 ? f.size + ' B' : (f.size/1024).toFixed(1) + ' KB'}</span></div>`
+  ).join('');
+}
+
+async function loadPairingQr() {
+  const r = await api('/pairing-qr');
+  if (r.error) {
+    document.getElementById('pairing-qr').textContent = 'Select a vault first';
+    return;
+  }
+  document.getElementById('pairing-qr').innerHTML = r.svg;
+  const p = r.payload;
+  document.getElementById('pairing-info').textContent =
+    p.host + ':' + p.port + '  ·  ' + p.device_name + '  ·  fp ' + p.public_key_fingerprint.slice(0, 12);
+}
+
+async function loadPending() {
+  const list = await api('/pending');
+  const el = document.getElementById('pending-list');
+  if (!list.length) {
+    el.innerHTML = '<span class="text2">No pending requests</span>';
+    return;
+  }
+  el.innerHTML = list.map(p =>
+    `<div class="row">
+      <span class="dot amber"></span>
+      <div class="f1">
+        <div>${p.device_name}</div>
+        <div class="mono text2" style="font-size:11px">${p.device_id} · fp ${p.fingerprint.slice(0, 12)}</div>
+      </div>
+      <button class="btn-sm" style="color:var(--green);border-color:var(--green)" onclick="decide('${p.device_id}', true)">Approve</button>
+      <button class="btn-sm" style="color:var(--red);border-color:var(--red)" onclick="decide('${p.device_id}', false)">Reject</button>
+    </div>`
+  ).join('');
+}
+
+async function decide(id, approve) {
+  await api('/' + (approve ? 'approve' : 'reject') + '/' + encodeURIComponent(id), { method: 'POST' });
+  await loadPending();
+}
+
+refresh();
+loadPairingQr();
+loadPending();
+setInterval(loadPending, 2000);
+</script>
+</body>
+</html>

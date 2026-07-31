@@ -1,0 +1,174 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  ANDROID_HOME: ${{ github.workspace }}/android-sdk
+  ANDROID_NDK_HOME: ${{ github.workspace }}/android-sdk/ndk/26.1.10909125
+  GRADLE_USER_HOME: ${{ github.workspace }}/.gradle
+
+jobs:
+  # ---------------------------------------------------------------- Android APK
+  android-apk:
+    name: Android APK
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "ndk;26.1.10909125"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: |
+            aarch64-linux-android
+            armv7-linux-androideabi
+            x86_64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+
+      - name: Configure release signing
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.OBSYNC_KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.OBSYNC_KEYSTORE_BASE64 }}" | base64 -d > android/app/release.keystore
+            cat > android/app/keystore.properties <<EOF
+            storeFile=release.keystore
+            storePassword=${{ secrets.OBSYNC_KEYSTORE_PASSWORD }}
+            keyAlias=${{ secrets.OBSYNC_KEY_ALIAS }}
+            keyPassword=${{ secrets.OBSYNC_KEY_PASSWORD }}
+            EOF
+          fi
+
+      - name: Build APK
+        working-directory: android
+        run: |
+          ./gradlew :app:assembleRelease --no-daemon
+
+      - name: Rename APK
+        working-directory: android
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cp app/build/outputs/apk/release/app-release.apk obsync-${VERSION:-latest}.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: obsync-apk
+          path: android/obsync-*.apk
+
+  # ------------------------------------------------------- httpd server binaries
+  server-binaries:
+    name: Server binary (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: obsync-server-linux-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset: obsync-server-macos-aarch64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset: obsync-server-macos-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: obsync-server-windows-x86_64.exe
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release -p obsync-httpd --target ${{ matrix.target }}
+
+      - name: Rename binary
+        shell: bash
+        run: |
+          EXT=""
+          [ "${{ runner.os }}" = "Windows" ] && EXT=".exe"
+          cp target/${{ matrix.target }}/release/obsync-httpd$EXT \
+             obsync-server-${{ matrix.target }}
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: obsync-server-${{ matrix.target }}
+          path: obsync-server-${{ matrix.target }}
+
+  # ------------------------------------------------------------------- Release
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs: [android-apk, server-binaries]
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Obsync ${{ github.ref_name }}
+          body: |
+            ## Obsync ${{ github.ref_name }}
+
+            ### Android
+            - `obsync-${{ github.ref_name }}.apk` — install on your phone (enable "Install unknown apps").
+            - Pick a release with `vX.Y.Z`; the tag notes the changes.
+
+            ### Desktop server
+            Download the binary for your OS, then run it — it opens the pairing
+            dashboard at http://localhost:42021 automatically:
+            - Linux: `obsync-server-linux-x86_64` (or `./run-server.sh` from source)
+            - macOS: `obsync-server-macos-aarch64` / `obsync-server-macos-x86_64`
+            - Windows: `obsync-server-windows-x86_64.exe`
+          files: |
+            artifacts/obsync-*.apk
+            artifacts/obsync-server-*
+          generate_release_notes: true

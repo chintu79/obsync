@@ -1,0 +1,2 @@
+-keep class com.obsync.bridge.** { *; }
+-keep class com.obsync.service.** { *; }

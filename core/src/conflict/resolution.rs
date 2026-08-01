@@ -46,6 +46,28 @@ impl ConflictResolver {
         }
     }
 
+    /// Locate the conflict copy for `original` (e.g. `notes/idea.md` →
+    /// `notes/idea.conflict-*.md`) by scanning its directory.
+    pub fn find_conflict_copy(original: &Path) -> Option<PathBuf> {
+        let parent = original.parent().unwrap_or_else(|| Path::new(""));
+        let name = original.file_name()?.to_string_lossy();
+        let stem = original.file_stem()?.to_string_lossy();
+        let entries = std::fs::read_dir(parent).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let file_name = path.file_name()?.to_string_lossy();
+            if file_name.starts_with(&format!("{name}.conflict-"))
+                || file_name.starts_with(&format!("{stem}.conflict-"))
+            {
+                return Some(path);
+            }
+        }
+        None
+    }
+
     /// Generate the conflict filename for a given path and device.
     pub fn generate_conflict_path(path: &Path, device_id: &str) -> PathBuf {
         let stem = path.file_stem().unwrap_or_default();

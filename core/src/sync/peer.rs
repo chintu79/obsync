@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 
 use tracing::{debug, info, warn};
 
+use crate::conflict::detector::{resolve_divergence, SideOutcome};
 use crate::filesystem::atomic::AtomicWriter;
 use crate::filesystem::io::hash_file_path;
+use crate::filesystem::versioning::snapshot_before_overwrite;
 use crate::filesystem::Blake3Hash;
 use crate::index::state::{FileState, Manifest};
 use crate::network::peer::PeerConnection;
@@ -79,19 +81,39 @@ pub async fn run_client_session(
             }
             Some(lf) => {
                 if lf.content_hash != rf.content_hash {
-                    if lf.revision > 0 && rf.revision > 0 {
-                        // Both changed since last sync → conflict
-                        warn!("Conflict on {:?}", path);
-                        engine.mark_conflict(path)?;
-                        report.conflicts += 1;
-                    } else if lf.modified_at >= rf.modified_at {
-                        // Local newer → push
-                        push_file(engine, peer, *path, lf, &mut request_id).await?;
-                        report.pushed_files += 1;
-                    } else {
-                        // Server newer → pull
-                        pull_file(engine, peer, *path, rf, &mut request_id).await?;
-                        report.pulled_files += 1;
+                    match resolve_divergence(lf, rf) {
+                        SideOutcome::Conflict => {
+                            // Both edited within the window → real conflict.
+                            // Keep the local version at the original path and
+                            // pull the remote content into a conflict copy.
+                            warn!("Conflict on {:?}", path);
+                            if let Some(copy) = engine
+                                .plan_conflict_copy(path, &rf.content_hash, true)?
+                            {
+                                let dest = engine.vault_path().join(&copy);
+                                let size = pull_file_to(
+                                    peer,
+                                    path,
+                                    rf,
+                                    &dest,
+                                    engine.vault_path(),
+                                    &mut request_id,
+                                )
+                                .await?;
+                                engine.record_remote_file(&copy, &rf.content_hash, size, rf.modified_at)?;
+                            }
+                            report.conflicts += 1;
+                        }
+                        SideOutcome::LocalWins => {
+                            // Local newer → push
+                            push_file(engine, peer, *path, lf, &mut request_id).await?;
+                            report.pushed_files += 1;
+                        }
+                        SideOutcome::RemoteWins => {
+                            // Server newer → pull
+                            pull_file(engine, peer, *path, rf, &mut request_id).await?;
+                            report.pulled_files += 1;
+                        }
                     }
                 }
             }
@@ -219,6 +241,23 @@ async fn pull_file(
     remote: &FileState,
     request_id: &mut u64,
 ) -> Result<(), anyhow::Error> {
+    let dest = engine.vault_path().join(path);
+    let data = pull_file_to(peer, path, remote, &dest, engine.vault_path(), request_id).await?;
+    engine.record_remote_file(path, &remote.content_hash, data, remote.modified_at)?;
+    debug!("Pulled {:?} ({} bytes)", path, data);
+    Ok(())
+}
+
+/// Request `remote` content from the peer and write it to `dest`.
+/// Returns the number of bytes received.
+async fn pull_file_to(
+    peer: &PeerConnection,
+    path: &Path,
+    remote: &FileState,
+    dest: &Path,
+    vault: &Path,
+    request_id: &mut u64,
+) -> Result<u64, anyhow::Error> {
     let req = FileRequestPayload {
         relative_path: path.to_string_lossy().into_owned(),
         content_hash: remote.content_hash,
@@ -232,17 +271,13 @@ async fn pull_file(
     .await?;
     *request_id += 1;
 
-    let dest = engine.vault_path().join(path);
-    let data = receive_file_data(peer, &dest).await?;
+    let data = receive_file_data(peer, vault, dest).await?;
 
-    let hash = hash_file_path(&dest)?;
+    let hash = hash_file_path(dest)?;
     if hash != remote.content_hash {
         warn!("Hash mismatch after pull for {:?}", path);
     }
-
-    engine.record_remote_file(path, &hash, data, remote.modified_at)?;
-    debug!("Pulled {:?} ({} bytes)", path, data);
-    Ok(())
+    Ok(data)
 }
 
 async fn push_file(
@@ -299,8 +334,17 @@ async fn handle_server_operation(
     match op.operation_type {
         0 | 1 => {
             // create/update: receive file data
-            let dest = engine.vault_path().join(&path);
-            let data = receive_file_data(peer, &dest).await?;
+            let original_dest = engine.vault_path().join(&path);
+            // Guard against clobbering unsynced local edits: write the remote
+            // content to a conflict copy instead when this would overwrite them.
+            let dest = match op.content_hash {
+                Some(expected) => engine
+                    .plan_conflict_copy(&path, &expected, false)?
+                    .map(|copy| engine.vault_path().join(copy))
+                    .unwrap_or(original_dest.clone()),
+                None => original_dest.clone(),
+            };
+            let data = receive_file_data(peer, &engine.vault_path(), &dest).await?;
             let hash = hash_file_path(&dest)?;
             let hash = match op.content_hash {
                 Some(expected) => {
@@ -311,7 +355,15 @@ async fn handle_server_operation(
                 }
                 None => hash,
             };
-            engine.record_remote_file(&path, &hash, data, op.modified_at)?;
+            if dest != original_dest {
+                // Remote content landed in a conflict copy: index the copy as
+                // a new file (it syncs to peers) and leave the original alone.
+                if let Ok(copy_rel) = dest.strip_prefix(&engine.vault_path()) {
+                    engine.record_remote_file(copy_rel, &hash, data, op.modified_at)?;
+                }
+            } else {
+                engine.record_remote_file(&path, &hash, data, op.modified_at)?;
+            }
             // Ack
             peer.send_message(&ProtocolMessage::new(MessageType::OperationAck, 0, vec![]))
                 .await?;
@@ -365,10 +417,16 @@ async fn send_file_data(
 
 async fn receive_file_data(
     peer: &PeerConnection,
+    vault: &Path,
     dest: &Path,
 ) -> Result<u64, anyhow::Error> {
     let parent = dest.parent().unwrap_or(Path::new(""));
     tokio::fs::create_dir_all(parent).await?;
+
+    // Preserve the previous content as a version snapshot before overwriting.
+    if let Ok(rel) = dest.strip_prefix(vault) {
+        let _ = snapshot_before_overwrite(vault, rel);
+    }
 
     let mut writer = AtomicWriter::new(dest.to_owned())?;
     let mut total: u64 = 0;
@@ -431,7 +489,7 @@ mod tests {
         let sender = tokio::spawn(async move {
             send_file_data(&client_peer, Path::new("f.bin"), &src).await.unwrap();
         });
-        let total = receive_file_data(&server_peer, &dest).await.unwrap();
+        let total = receive_file_data(&server_peer, dir.path(), &dest).await.unwrap();
         sender.await.unwrap();
 
         assert_eq!(total as usize, data.len());

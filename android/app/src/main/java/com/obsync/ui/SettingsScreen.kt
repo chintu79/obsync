@@ -9,13 +9,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.navigation.NavController
 import com.obsync.viewmodel.SyncViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(vm: SyncViewModel) {
+fun SettingsScreen(vm: SyncViewModel, nav: NavController) {
     val state by vm.state.collectAsState()
 
     Scaffold(
@@ -23,7 +25,7 @@ fun SettingsScreen(vm: SyncViewModel) {
             TopAppBar(
                 title = { Text("Settings") },
                 navigationIcon = {
-                    IconButton(onClick = { /* nav handled */ }) {
+                    IconButton(onClick = { nav.popBackStack() }) {
                         Icon(Icons.Default.ArrowBack, "Back")
                     }
                 }
@@ -34,18 +36,18 @@ fun SettingsScreen(vm: SyncViewModel) {
             // Vault
             Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("Vault", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Text("Vault", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(8.dp))
                     SettingRow("Path", if (state.vaultPath.isNotEmpty()) state.vaultPath else "Not set")
                     SettingRow("Files", "${state.fileCount}")
-                    SettingRow("Status", state.status.name)
+                    SettingRow("Status", state.status.label)
                 }
             }
 
             // Device
             Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("Device", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Text("Device", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(8.dp))
                     SettingRow("Name", state.deviceName)
                     SettingRow("ID", state.deviceId)
@@ -53,15 +55,34 @@ fun SettingsScreen(vm: SyncViewModel) {
                 }
             }
 
+            // Versions
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                onClick = { nav.navigate("versions") },
+            ) {
+                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Version history", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            if (state.snapshots.isEmpty()) "No snapshots yet" else "${state.snapshots.size} snapshot(s) saved",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Icon(Icons.Default.ChevronRight, null)
+                }
+            }
+
             // About
             Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("About", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Text("About", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(8.dp))
-                    Text("Obsync v0.1.0", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text("Local-first P2P vault sync", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Obsync v0.1.0", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Local-first P2P vault sync", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(4.dp))
-                    Text("No cloud. No accounts. Encrypted.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("No cloud. No accounts. Encrypted.", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
 
@@ -70,7 +91,7 @@ fun SettingsScreen(vm: SyncViewModel) {
                     Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Error, null, tint = MaterialTheme.colorScheme.onError)
                         Spacer(Modifier.width(8.dp))
-                        Text(state.error!!, color = MaterialTheme.colorScheme.onError, fontSize = 13.sp)
+                        Text(state.error!!, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onError)
                     }
                 }
             }
@@ -81,7 +102,15 @@ fun SettingsScreen(vm: SyncViewModel) {
 @Composable
 fun SettingRow(label: String, value: String) {
     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1f).padding(start = 8.dp),
+        )
     }
 }

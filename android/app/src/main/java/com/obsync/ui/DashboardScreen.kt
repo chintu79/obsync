@@ -20,10 +20,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
 import com.obsync.viewmodel.SyncState
 import com.obsync.viewmodel.SyncStatus
 import com.obsync.viewmodel.SyncViewModel
@@ -41,7 +46,7 @@ fun DashboardScreen(vm: SyncViewModel, nav: NavController) {
             TopAppBar(
                 title = { Text("Obsync", fontWeight = FontWeight.SemiBold) },
                 actions = {
-                    IconButton(onClick = { nav.navigate("settings") }) {
+                    IconButton(onClick = { nav.navigate("settings") { launchSingleTop = true } }) {
                         Icon(Icons.Default.Settings, "Settings")
                     }
                 }
@@ -62,7 +67,7 @@ fun DashboardScreen(vm: SyncViewModel, nav: NavController) {
                 item {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("Files", style = MaterialTheme.typography.titleSmall)
-                        TextButton(onClick = { vm.refreshFiles() }) { Text("Refresh", fontSize = 12.sp) }
+                        TextButton(onClick = { vm.refreshFiles() }) { Text("Refresh") }
                     }
                 }
                 items(state.recentFiles.take(10)) { f ->
@@ -87,8 +92,8 @@ fun FileAccessPrompt(vm: SyncViewModel) {
             Spacer(Modifier.height(4.dp))
             Text(
                 "Obsync needs access to all files so it can sync your vault folder.",
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 13.sp
             )
             Spacer(Modifier.height(16.dp))
             Button(onClick = {
@@ -110,9 +115,9 @@ fun NoVaultPrompt(onPick: () -> Unit) {
             Spacer(Modifier.height(12.dp))
             Text("Select a vault directory", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(4.dp))
-            Text("Choose your Obsidian vault folder", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+            Text("Choose your Obsidian vault folder", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(16.dp))
-            Button(onClick = onPick) { Text("Browse Vault") }
+            Button(onClick = onPick) { Text("Browse vault") }
         }
     }
 }
@@ -124,11 +129,11 @@ fun VaultCard(state: SyncState) {
             Box(Modifier.size(10.dp).clip(CircleShape).background(statusColor(state.status)))
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(state.vaultName, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-                Text("${state.fileCount} files · ${state.status.name}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                Text(state.vaultName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text("${state.fileCount} files · ${state.status.label}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (state.fileCount > 0) {
-                Text("${state.fileCount}", fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("${state.fileCount}", style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"), fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -146,26 +151,34 @@ fun PeerCard(vm: SyncViewModel, state: SyncState, nav: NavController) {
                     Box(Modifier.size(10.dp).clip(CircleShape).background(if (state.syncing) Color(0xFF16A34A) else Color(0xFF737373)))
                     Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(state.pairedPeer.deviceName, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                        Text("${state.pairedPeer.host}:${state.pairedPeer.port}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(state.pairedPeer.deviceName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            if (state.syncing) "Syncing…" else "${state.pairedPeer.host}:${state.pairedPeer.port}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
                 Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (state.syncing) {
-                        Button(onClick = { vm.stopSync() }) { Text("Stop Sync") }
+                        Button(onClick = { vm.stopSync() }) { Text("Stop sync") }
                     } else {
-                        Button(onClick = { vm.startSync() }) { Text("Sync Now") }
+                        Button(onClick = { vm.startSync() }) { Text("Sync now") }
                     }
-                    TextButton(onClick = { vm.forgetPeer() }) { Text("Forget", fontSize = 12.sp) }
+                    TextButton(onClick = { vm.forgetPeer() }) { Text("Unpair") }
+                }
+                if (state.lastSync.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(state.lastSync, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else {
                 Text("Scan the QR code shown on the laptop to pair once — then sync anytime.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedButton(onClick = { nav.navigate("pairing") }) { Text("Scan QR Code") }
-                    Text("or", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = { nav.navigate("pairing") { launchSingleTop = true } }) { Text("Scan QR code") }
+                    Text("or", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     OutlinedTextField(
                         value = state.peerAddress,
                         onValueChange = { vm.setPeerAddress(it) },
@@ -178,18 +191,23 @@ fun PeerCard(vm: SyncViewModel, state: SyncState, nav: NavController) {
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (state.syncing) {
-                        Button(onClick = { vm.stopSync() }) { Text("Stop Sync") }
+                        Button(onClick = { vm.stopSync() }) { Text("Stop sync") }
                     } else {
-                        Button(onClick = { vm.startSync() }) { Text("Sync Now") }
+                        Button(onClick = { vm.startSync() }) { Text("Sync now") }
                     }
                     if (state.lastSync.isNotEmpty()) {
-                        Text(state.lastSync, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(state.lastSync, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
             state.error?.let {
                 Spacer(Modifier.height(8.dp))
-                Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                )
             }
         }
     }
@@ -201,20 +219,20 @@ fun DeviceCard(state: SyncState, nav: NavController) {
         Column(Modifier.padding(16.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("Devices", style = MaterialTheme.typography.titleSmall)
-                TextButton(onClick = { nav.navigate("devices") }) { Text("Manage", fontSize = 12.sp) }
+                TextButton(onClick = { nav.navigate("devices") { launchSingleTop = true } }) { Text("Manage") }
             }
             if (state.pairedDevices.isEmpty()) {
-                Text("No paired devices", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                Text("No paired devices", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(8.dp))
-                OutlinedButton(onClick = { nav.navigate("pairing") }) { Text("Pair Device") }
+                OutlinedButton(onClick = { nav.navigate("pairing") { launchSingleTop = true } }) { Text("Pair device") }
             } else {
                 state.pairedDevices.forEach { d ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.size(8.dp).clip(CircleShape).background(if (d.connected) Color(0xFF16A34A) else Color(0xFF737373)))
                         Spacer(Modifier.width(8.dp))
-                        Text(d.deviceName, fontSize = 14.sp)
+                        Text(d.deviceName, style = MaterialTheme.typography.titleSmall)
                         Spacer(Modifier.weight(1f))
-                        Text(if (d.connected) "Connected" else "Offline", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(if (d.connected) "Connected" else "Offline", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -227,10 +245,10 @@ fun FileRow(path: String, size: Long) {
     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Default.Description, null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.width(8.dp))
-        Text(path, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        Text(path, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
         Text(
             when { size < 1024 -> "$size B"; size < 1048576 -> "${size / 1024} KB"; else -> "${size / 1048576} MB" },
-            fontSize = 12.sp,
+            style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
@@ -246,12 +264,20 @@ fun statusColor(s: SyncStatus) = when (s) {
 
 @Composable
 fun BottomBar(nav: NavController) {
+    val currentBackStackEntry by nav.currentBackStackEntryAsState()
+    val currentRoute = currentBackStackEntry?.destination?.route
     NavigationBar {
-        NavigationBarItem(selected = true, onClick = { nav.navigate("dashboard") },
+        NavigationBarItem(
+            selected = currentRoute == "dashboard",
+            onClick = { nav.navigate("dashboard") { popUpTo(nav.graph.startDestinationId) { saveState = true }; launchSingleTop = true; restoreState = true } },
             icon = { Icon(Icons.Default.Home, null) }, label = { Text("Home") })
-        NavigationBarItem(selected = false, onClick = { nav.navigate("devices") },
+        NavigationBarItem(
+            selected = currentRoute == "devices",
+            onClick = { nav.navigate("devices") { launchSingleTop = true } },
             icon = { Icon(Icons.Default.Devices, null) }, label = { Text("Devices") })
-        NavigationBarItem(selected = false, onClick = { nav.navigate("conflicts") },
+        NavigationBarItem(
+            selected = currentRoute == "conflicts",
+            onClick = { nav.navigate("conflicts") { launchSingleTop = true } },
             icon = { Icon(Icons.Default.Warning, null) }, label = { Text("Conflicts") })
     }
 }

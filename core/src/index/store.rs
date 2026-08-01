@@ -2,6 +2,8 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, Result as SqlResult};
 
+use crate::conflict::record::ConflictEntry;
+use crate::filesystem::Blake3Hash;
 use crate::index::state::{FileState, SyncState, Tombstone};
 
 pub struct Store {
@@ -76,13 +78,30 @@ impl Store {
             );
             ",
         )?;
+
+        // v2: track the content hash each side last synced per file, so a
+        // sequential edit (A edits → sync → B edits → sync) is an update, not
+        // a conflict. Existing rows get NULL = "no agreement yet".
+        let has_synced_hash: bool = self
+            .conn
+            .prepare("PRAGMA table_info(file_states)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .any(|name| name == "synced_hash");
+        if !has_synced_hash {
+            self.conn.execute(
+                "ALTER TABLE file_states ADD COLUMN synced_hash BLOB",
+                [],
+            )?;
+        }
+
         Ok(())
     }
 
     pub fn upsert_file_state(&self, state: &FileState) -> SqlResult<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO file_states (relative_path, content_hash, size, modified_at, revision, sync_state)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT OR REPLACE INTO file_states (relative_path, content_hash, size, modified_at, revision, sync_state, synced_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 state.relative_path.to_string_lossy().as_ref(),
                 &state.content_hash[..],
@@ -90,6 +109,7 @@ impl Store {
                 state.modified_at,
                 state.revision,
                 state.sync_state.clone() as i32,
+                state.synced_hash.as_ref().map(|h| &h[..]),
             ],
         )?;
         Ok(())
@@ -97,7 +117,7 @@ impl Store {
 
     pub fn get_file_state(&self, path: &str) -> SqlResult<Option<FileState>> {
         let mut stmt = self.conn.prepare(
-            "SELECT relative_path, content_hash, size, modified_at, revision, sync_state
+            "SELECT relative_path, content_hash, size, modified_at, revision, sync_state, synced_hash
              FROM file_states WHERE relative_path = ?1",
         )?;
 
@@ -120,6 +140,13 @@ impl Store {
                     4 => SyncState::Conflict,
                     _ => SyncState::Synced,
                 },
+                synced_hash: row
+                    .get::<_, Option<Vec<u8>>>(6)?
+                    .map(|bytes| {
+                        let mut h = [0u8; 32];
+                        h.copy_from_slice(&bytes);
+                        h
+                    }),
             }))
         } else {
             Ok(None)
@@ -134,7 +161,7 @@ impl Store {
 
     pub fn get_all_file_states(&self) -> SqlResult<Vec<FileState>> {
         let mut stmt = self.conn.prepare(
-            "SELECT relative_path, content_hash, size, modified_at, revision, sync_state FROM file_states",
+            "SELECT relative_path, content_hash, size, modified_at, revision, sync_state, synced_hash FROM file_states",
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -155,6 +182,13 @@ impl Store {
                     4 => SyncState::Conflict,
                     _ => SyncState::Synced,
                 },
+                synced_hash: row
+                    .get::<_, Option<Vec<u8>>>(6)?
+                    .map(|bytes| {
+                        let mut h = [0u8; 32];
+                        h.copy_from_slice(&bytes);
+                        h
+                    }),
             })
         })?;
 
@@ -222,6 +256,70 @@ impl Store {
             Ok(None)
         }
     }
+
+    /// Record a conflict for `relative_path`, replacing any previous
+    /// unresolved entry for the same path.
+    pub fn record_conflict(
+        &self,
+        relative_path: &str,
+        local_hash: Option<&Blake3Hash>,
+        remote_hash: Option<&Blake3Hash>,
+    ) -> SqlResult<()> {
+        self.conn.execute(
+            "DELETE FROM conflicts WHERE relative_path = ?1 AND resolved = 0",
+            params![relative_path],
+        )?;
+        self.conn.execute(
+            "INSERT INTO conflicts (relative_path, local_hash, remote_hash, detected_at, resolved)
+             VALUES (?1, ?2, ?3, ?4, 0)",
+            params![
+                relative_path,
+                local_hash.map(|h| &h[..]),
+                remote_hash.map(|h| &h[..]),
+                chrono::Utc::now().timestamp_millis(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// List unresolved conflicts, newest first.
+    pub fn get_unresolved_conflicts(&self) -> SqlResult<Vec<ConflictEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, relative_path, local_hash, remote_hash, detected_at
+             FROM conflicts WHERE resolved = 0 ORDER BY detected_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let local_hash: Option<Vec<u8>> = row.get(2)?;
+            let remote_hash: Option<Vec<u8>> = row.get(3)?;
+            Ok(ConflictEntry {
+                id: row.get(0)?,
+                relative_path: row.get::<_, String>(1)?.into(),
+                local_hash: local_hash.map(blake_from_vec),
+                remote_hash: remote_hash.map(blake_from_vec),
+                local_revision: None,
+                remote_revision: None,
+                detected_at: row.get(4)?,
+                resolved: false,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Mark a conflict entry as resolved.
+    pub fn mark_conflict_resolved(&self, id: i64) -> SqlResult<()> {
+        self.conn.execute(
+            "UPDATE conflicts SET resolved = 1 WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+}
+
+fn blake_from_vec(bytes: Vec<u8>) -> Blake3Hash {
+    let mut h = [0u8; 32];
+    let n = bytes.len().min(32);
+    h[..n].copy_from_slice(&bytes[..n]);
+    h
 }
 
 #[cfg(test)]

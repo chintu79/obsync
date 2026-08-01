@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -48,6 +48,41 @@ struct SelectVaultRequest {
     path: String,
 }
 
+#[derive(Deserialize)]
+struct ResolveConflictRequest {
+    path: String,
+    resolution: String,
+}
+
+#[derive(Deserialize)]
+struct RestoreSnapshotRequest {
+    path: String,
+    timestamp: i64,
+}
+
+fn vault_file() -> PathBuf {
+    dirs_home().join(".obsync-server-vault.json")
+}
+
+fn load_vault_path() -> Option<PathBuf> {
+    let path = vault_file();
+    if !path.exists() {
+        return None;
+    }
+    let data = std::fs::read(&path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_slice(&data).ok()?;
+    let p = parsed.get("path")?.as_str()?;
+    let pb = PathBuf::from(p);
+    pb.is_dir().then_some(pb)
+}
+
+fn save_vault_path(vault: &Path) {
+    let data = serde_json::json!({ "path": vault.to_string_lossy() });
+    if let Ok(bytes) = serde_json::to_vec(&data) {
+        let _ = std::fs::write(vault_file(), bytes);
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -60,10 +95,21 @@ async fn main() -> anyhow::Result<()> {
     let approved = load_approved()?;
     let state = Arc::new(AppState {
         engine: Arc::new(Mutex::new(None)),
-        vault_path: Arc::new(Mutex::new(None)),
+        vault_path: Arc::new(Mutex::new(load_vault_path())),
         pending: Arc::new(Mutex::new(HashMap::new())),
         approved: Arc::new(Mutex::new(approved)),
     });
+
+    // Re-select the persisted vault so the daemon restarts with its vault.
+    {
+        let vault = state.vault_path.lock().await.clone();
+        if let Some(vault) = vault {
+            match select_vault_impl(&state, vault).await {
+                Ok(_) => info!("Restored vault selection from disk"),
+                Err(e) => warn!("Could not restore vault from disk: {e}"),
+            }
+        }
+    }
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -76,6 +122,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/files", get(handle_files))
         .route("/api/devices", get(handle_devices))
         .route("/api/conflicts", get(handle_conflicts))
+        .route("/api/conflicts/resolve", post(handle_resolve_conflict))
+        .route("/api/versions", get(handle_versions))
+        .route("/api/restore", post(handle_restore))
         .route("/api/identity", get(handle_identity))
         .route("/api/pairing-qr", get(handle_pairing_qr))
         .route("/api/pending", get(handle_pending))
@@ -189,7 +238,7 @@ async fn handle_sync_connection(
     };
 
     let mut engine = SyncEngine::new(vault_path, device_id).await?;
-    engine.refresh_index().await?;
+    engine.refresh_index(true).await?;
     let _report: SyncReport = run_server_session(&mut engine, &peer).await?;
 
     Ok(())
@@ -292,9 +341,19 @@ async fn handle_select_vault(
     if !path.exists() {
         return Json(serde_json::json!({ "error": "path not found" }));
     }
+    match select_vault_impl(&state, path).await {
+        Ok(file_count) => Json(serde_json::json!({
+            "ok": true,
+            "file_count": file_count,
+            "state": "Idle"
+        })),
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
 
+async fn select_vault_impl(state: &Arc<AppState>, path: PathBuf) -> anyhow::Result<u64> {
     if let Err(e) = db::ensure_db_directory(&path) {
-        return Json(serde_json::json!({ "error": e.to_string() }));
+        return Err(anyhow::anyhow!(e.to_string()));
     }
 
     let device_id = {
@@ -312,22 +371,13 @@ async fn handle_select_vault(
         identity.device_id.clone()
     };
 
-    match SyncEngine::new(path.clone(), device_id).await {
-        Ok(mut engine) => {
-            if let Err(e) = engine.initial_index().await {
-                return Json(serde_json::json!({ "error": e.to_string() }));
-            }
-            let file_count = engine.file_count();
-            *state.vault_path.lock().await = Some(path);
-            *state.engine.lock().await = Some(engine);
-            Json(serde_json::json!({
-                "ok": true,
-                "file_count": file_count,
-                "state": "Idle"
-            }))
-        }
-        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
-    }
+    let mut engine = SyncEngine::new(path.clone(), device_id).await?;
+    engine.initial_index().await?;
+    let file_count = engine.file_count();
+    *state.vault_path.lock().await = Some(path.clone());
+    *state.engine.lock().await = Some(engine);
+    save_vault_path(&path);
+    Ok(file_count)
 }
 
 async fn handle_files(
@@ -359,8 +409,113 @@ async fn handle_devices() -> Json<Vec<serde_json::Value>> {
     Json(vec![])
 }
 
-async fn handle_conflicts() -> Json<Vec<serde_json::Value>> {
-    Json(vec![])
+async fn handle_conflicts(
+    state: State<Arc<AppState>>,
+) -> Json<Vec<serde_json::Value>> {
+    let guard = state.engine.lock().await;
+    if let Some(engine) = guard.as_ref() {
+        match engine.conflicts() {
+            Ok(entries) => Json(
+                entries
+                    .into_iter()
+                    .map(|e| {
+                        serde_json::json!({
+                            "id": e.id,
+                            "path": e.relative_path.to_string_lossy(),
+                            "local_hash": e.local_hash.map(|h| hex::encode(h)),
+                            "remote_hash": e.remote_hash.map(|h| hex::encode(h)),
+                            "detected_at": e.detected_at,
+                        })
+                    })
+                    .collect(),
+            ),
+            Err(_) => Json(vec![]),
+        }
+    } else {
+        Json(vec![])
+    }
+}
+
+async fn handle_resolve_conflict(
+    state: State<Arc<AppState>>,
+    Json(req): Json<ResolveConflictRequest>,
+) -> Json<serde_json::Value> {
+    let mut guard = state.engine.lock().await;
+    let Some(engine) = guard.as_mut() else {
+        return Json(serde_json::json!({ "error": "no vault selected" }));
+    };
+    let resolution = match req.resolution.as_str() {
+        "KeepLocal" => obsync_core::conflict::resolution::Resolution::KeepLocal,
+        "KeepRemote" => obsync_core::conflict::resolution::Resolution::KeepRemote,
+        "KeepBoth" => obsync_core::conflict::resolution::Resolution::KeepBoth,
+        other => {
+            return Json(serde_json::json!({ "error": format!("unknown resolution {other}") }));
+        }
+    };
+    match engine.resolve_conflict(&req.path, &resolution).await {
+        Ok(()) => Json(serde_json::json!({ "ok": true, "path": req.path })),
+        Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn handle_versions(
+    state: State<Arc<AppState>>,
+) -> Json<Vec<serde_json::Value>> {
+    let vault = {
+        let guard = state.vault_path.lock().await;
+        guard.clone()
+    };
+    let Some(vault) = vault else {
+        return Json(vec![]);
+    };
+    match obsync_core::filesystem::versioning::list_all_snapshots(&vault) {
+        Ok(snaps) => Json(
+            snaps
+                .into_iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "path": s.relative_path,
+                        "timestamp": s.timestamp,
+                        "size": s.size,
+                    })
+                })
+                .collect(),
+        ),
+        Err(_) => Json(vec![]),
+    }
+}
+
+async fn handle_restore(
+    state: State<Arc<AppState>>,
+    Json(req): Json<RestoreSnapshotRequest>,
+) -> Json<serde_json::Value> {
+    let vault = {
+        let guard = state.vault_path.lock().await;
+        guard.clone()
+    };
+    let Some(vault) = vault else {
+        return Json(serde_json::json!({ "error": "no vault selected" }));
+    };
+    let rel = PathBuf::from(&req.path);
+    let full = vault.join(&rel);
+    let canon_vault = vault.canonicalize().unwrap_or(vault.clone());
+    let canon_full = full.canonicalize().unwrap_or(full.clone());
+    if !canon_full.starts_with(&canon_vault) {
+        return Json(serde_json::json!({ "error": "path escapes vault" }));
+    }
+    if let Err(e) = obsync_core::filesystem::versioning::restore_snapshot(
+        &vault,
+        &rel,
+        req.timestamp,
+    ) {
+        return Json(serde_json::json!({ "error": e.to_string() }));
+    }
+    // Re-index so the restored content is treated as a fresh local edit.
+    let mut guard = state.engine.lock().await;
+    if let Some(engine) = guard.as_mut() {
+        let _ = engine.refresh_index(true).await;
+    }
+    Json(serde_json::json!({ "ok": true, "path": req.path }))
 }
 
 async fn handle_identity(

@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
     let version: i32 = conn
@@ -16,7 +16,8 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
                 size INTEGER NOT NULL,
                 modified_at INTEGER NOT NULL,
                 revision INTEGER NOT NULL,
-                sync_state INTEGER NOT NULL DEFAULT 0
+                sync_state INTEGER NOT NULL DEFAULT 0,
+                synced_hash BLOB
             );
 
             CREATE TABLE IF NOT EXISTS tombstones (
@@ -60,6 +61,16 @@ pub fn run_migrations(conn: &Connection) -> rusqlite::Result<()> {
             );
         ",
         )?;
+
+        // v1 → v2: track the last-synced content hash per file
+        let has_synced_hash: bool = conn
+            .prepare("PRAGMA table_info(file_states)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .any(|name| name == "synced_hash");
+        if !has_synced_hash {
+            conn.execute("ALTER TABLE file_states ADD COLUMN synced_hash BLOB", [])?;
+        }
 
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }

@@ -1,7 +1,7 @@
 //! JNI bridge for Android. Each function is callable from Kotlin via `System.loadLibrary("obsync_core")`.
 
 use jni::objects::{JByteArray, JClass, JString};
-use jni::sys::{jint, jstring};
+use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
 
 use std::sync::{Mutex, OnceLock};
@@ -234,18 +234,6 @@ pub extern "system" fn Java_com_obsync_bridge_RustBridge_generatePairingPayload(
     env.new_string(payload.to_string()).unwrap().into_raw()
 }
 
-/// Parse scanned QR pairing data.
-#[no_mangle]
-pub extern "system" fn Java_com_obsync_bridge_RustBridge_parsePairingPayload(
-    mut env: JNIEnv,
-    _class: JClass,
-    qr_data: JString,
-) -> jstring {
-    let data: String = env.get_string(&qr_data).unwrap().into();
-    let payload = serde_json::from_str::<serde_json::Value>(&data).unwrap_or_default();
-    env.new_string(payload.to_string()).unwrap().into_raw()
-}
-
 /// Encrypt data with AES-256-GCM. Key is hex-encoded 32 bytes.
 #[no_mangle]
 pub extern "system" fn Java_com_obsync_bridge_RustBridge_encrypt<'local>(
@@ -308,6 +296,7 @@ pub extern "system" fn Java_com_obsync_bridge_RustBridge_syncOnce<'local>(
             .await?;
 
         let mut engine = SyncEngine::new(vault_path, device_id.clone()).await?;
+        engine.refresh_index(false).await?;
         let report = crate::sync::peer::run_client_session(&mut engine, &peer).await?;
         Ok::<_, anyhow::Error>(serde_json::json!({
             "pulled": report.pulled_files,
@@ -317,6 +306,151 @@ pub extern "system" fn Java_com_obsync_bridge_RustBridge_syncOnce<'local>(
         }))
     });
 
+    let json = match result {
+        Ok(v) => v,
+        Err(e) => serde_json::json!({ "error": e.to_string() }),
+    };
+    env.new_string(json.to_string()).unwrap().into_raw()
+}
+
+/// List unresolved conflicts in the vault DB.
+/// Returns JSON: [{ id, path, detected_at }].
+#[no_mangle]
+pub extern "system" fn Java_com_obsync_bridge_RustBridge_listConflicts<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    vault_path: JString<'local>,
+    identity_json: JString<'local>,
+) -> jstring {
+    let vault_str: String = env.get_string(&vault_path).unwrap().into();
+    let id_json: String = env.get_string(&identity_json).unwrap().into();
+    let identity_val: serde_json::Value = serde_json::from_str(&id_json).unwrap_or_default();
+    let device_id = identity_val["device_id"].as_str().unwrap_or("android").to_string();
+
+    let vault_path = std::path::PathBuf::from(&vault_str);
+    let result = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let engine = SyncEngine::new(vault_path, device_id).await?;
+        let entries = engine.conflicts()?;
+        Ok::<_, anyhow::Error>(
+            entries
+                .into_iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "id": e.id,
+                        "path": e.relative_path.to_string_lossy(),
+                        "detected_at": e.detected_at,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+    });
+    let json = match result {
+        Ok(v) => serde_json::json!({ "ok": true, "conflicts": v }),
+        Err(e) => serde_json::json!({ "error": e.to_string() }),
+    };
+    env.new_string(json.to_string()).unwrap().into_raw()
+}
+
+/// Resolve a conflict by path. `resolution` is KeepLocal | KeepRemote | KeepBoth.
+#[no_mangle]
+pub extern "system" fn Java_com_obsync_bridge_RustBridge_resolveConflict<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    vault_path: JString<'local>,
+    identity_json: JString<'local>,
+    relative_path: JString<'local>,
+    resolution: JString<'local>,
+) -> jstring {
+    let vault_str: String = env.get_string(&vault_path).unwrap().into();
+    let id_json: String = env.get_string(&identity_json).unwrap().into();
+    let rel: String = env.get_string(&relative_path).unwrap().into();
+    let res: String = env.get_string(&resolution).unwrap().into();
+    let identity_val: serde_json::Value = serde_json::from_str(&id_json).unwrap_or_default();
+    let device_id = identity_val["device_id"].as_str().unwrap_or("android").to_string();
+
+    let resolution = match res.as_str() {
+        "KeepLocal" => crate::conflict::resolution::Resolution::KeepLocal,
+        "KeepRemote" => crate::conflict::resolution::Resolution::KeepRemote,
+        "KeepBoth" => crate::conflict::resolution::Resolution::KeepBoth,
+        other => {
+            return env
+                .new_string(format!("{{\"error\":\"unknown resolution {other}\"}}"))
+                .unwrap()
+                .into_raw();
+        }
+    };
+
+    let vault_path = std::path::PathBuf::from(&vault_str);
+    let result = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let mut engine = SyncEngine::new(vault_path, device_id).await?;
+        engine.resolve_conflict(&rel, &resolution).await?;
+        Ok::<_, anyhow::Error>(serde_json::json!({ "ok": true, "path": rel }))
+    });
+    let json = match result {
+        Ok(v) => v,
+        Err(e) => serde_json::json!({ "error": e.to_string() }),
+    };
+    env.new_string(json.to_string()).unwrap().into_raw()
+}
+
+/// List version snapshots across the vault.
+/// Returns JSON: { snapshots: [{ path, timestamp, size }] }.
+#[no_mangle]
+pub extern "system" fn Java_com_obsync_bridge_RustBridge_listSnapshots<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    vault_path: JString<'local>,
+) -> jstring {
+    let vault_str: String = env.get_string(&vault_path).unwrap().into();
+    let vault_path = std::path::PathBuf::from(&vault_str);
+    let result = crate::filesystem::versioning::list_all_snapshots(&vault_path);
+    let json = match result {
+        Ok(snaps) => serde_json::json!({
+            "ok": true,
+            "snapshots": snaps
+                .into_iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "path": s.relative_path,
+                        "timestamp": s.timestamp,
+                        "size": s.size,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }),
+        Err(e) => serde_json::json!({ "error": e.to_string() }),
+    };
+    env.new_string(json.to_string()).unwrap().into_raw()
+}
+
+/// Restore a snapshot over the current file. Returns JSON result.
+#[no_mangle]
+pub extern "system" fn Java_com_obsync_bridge_RustBridge_restoreSnapshot<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    vault_path: JString<'local>,
+    identity_json: JString<'local>,
+    relative_path: JString<'local>,
+    timestamp: jlong,
+) -> jstring {
+    let vault_str: String = env.get_string(&vault_path).unwrap().into();
+    let id_json: String = env.get_string(&identity_json).unwrap().into();
+    let rel: String = env.get_string(&relative_path).unwrap().into();
+    let identity_val: serde_json::Value = serde_json::from_str(&id_json).unwrap_or_default();
+    let device_id = identity_val["device_id"].as_str().unwrap_or("android").to_string();
+
+    let vault_path = std::path::PathBuf::from(&vault_str);
+    let result = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        crate::filesystem::versioning::restore_snapshot(
+            &vault_path,
+            std::path::Path::new(&rel),
+            timestamp,
+        )?;
+        // Refresh so the restored content becomes a pending push.
+        let mut engine = SyncEngine::new(vault_path, device_id).await?;
+        engine.refresh_index(false).await?;
+        Ok::<_, anyhow::Error>(serde_json::json!({ "ok": true, "path": rel }))
+    });
     let json = match result {
         Ok(v) => v,
         Err(e) => serde_json::json!({ "error": e.to_string() }),

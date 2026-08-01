@@ -2,13 +2,12 @@ use std::path::{Path, PathBuf};
 
 use tracing::{debug, info};
 
-use crate::conflict::detector::{detect_conflict, ConflictStatus};
 use crate::filesystem::atomic::cleanup_stale_temps;
 use crate::filesystem::io::{file_size, hash_file_path, modified_time};
 use crate::filesystem::Blake3Hash;
 use crate::filesystem::watcher::WatchEvent;
 use crate::index::compare::{compare_manifests, ManifestDiff};
-use crate::index::scanner::scan_vault;
+use crate::index::scanner::{scan_vault, scan_vault_incremental};
 use crate::index::state::{FileState, Manifest, RevisionId, SyncState, Tombstone};
 use crate::index::store::Store;
 use crate::network::peer::PeerConnection;
@@ -78,13 +77,16 @@ impl SyncEngine {
         modified_at: i64,
     ) -> Result<(), anyhow::Error> {
         self.revision_counter += 1;
-        let state = FileState::new(
+        let mut state = FileState::new(
             path.to_owned(),
             *content_hash,
             size,
             modified_at,
             self.revision_counter,
         );
+        // This content was just agreed with the peer — record it as the
+        // last-synced hash so future sequential edits become updates.
+        state.synced_hash = Some(*content_hash);
         self.store.upsert_file_state(&state)?;
         self.save_revision_counter()?;
         Ok(())
@@ -95,6 +97,7 @@ impl SyncEngine {
         let rel_str = path.to_string_lossy().to_string();
         if let Some(mut existing) = self.store.get_file_state(&rel_str)? {
             existing.sync_state = SyncState::Synced;
+            existing.synced_hash = Some(existing.content_hash);
             self.store.upsert_file_state(&existing)?;
         }
         Ok(())
@@ -108,6 +111,146 @@ impl SyncEngine {
             self.store.upsert_file_state(&existing)?;
         }
         Ok(())
+    }
+
+    /// Record an unresolved conflict entry in the conflicts table.
+    pub fn store_record_conflict(
+        &self,
+        path: &str,
+        local_hash: Option<&Blake3Hash>,
+        remote_hash: Option<&Blake3Hash>,
+    ) -> Result<(), anyhow::Error> {
+        self.store.record_conflict(path, local_hash, remote_hash)?;
+        Ok(())
+    }
+
+    /// Decide whether applying `remote_hash` to `path` would clobber unsynced
+    /// local edits. When it would, record the conflict entry, mark the file
+    /// as conflicted, and return the path where the remote content should be
+    /// written instead (the conflict copy).
+    ///
+    /// `force` is used by the client side, which already computed a conflict
+    /// via the diff; the server side relies on the synced_hash heuristic.
+    pub fn plan_conflict_copy(
+        &mut self,
+        path: &Path,
+        remote_hash: &Blake3Hash,
+        force: bool,
+    ) -> Result<Option<PathBuf>, anyhow::Error> {
+        let rel_str = path.to_string_lossy().to_string();
+        let Some(local) = self.store.get_file_state(&rel_str)? else {
+            return Ok(None);
+        };
+        if local.content_hash == *remote_hash {
+            return Ok(None);
+        }
+        let local_unsynced =
+            local.synced_hash.is_some() && local.synced_hash != Some(local.content_hash);
+        if !force && !local_unsynced {
+            return Ok(None);
+        }
+
+        let copy = self.conflict_copy_path(path, remote_hash)?;
+        self.mark_conflict(path)?;
+        self.store.record_conflict(
+            &rel_str,
+            Some(&local.content_hash),
+            Some(remote_hash),
+        )?;
+        info!("Conflict on {:?} -> {}", path, copy.display());
+        Ok(Some(copy))
+    }
+
+    fn conflict_copy_path(
+        &self,
+        path: &Path,
+        remote_hash: &Blake3Hash,
+    ) -> Result<PathBuf, anyhow::Error> {
+        use crate::conflict::resolution::ConflictResolver;
+        let base = ConflictResolver::generate_conflict_path(path, &self.device_id);
+        let full = self.vault_path.join(&base);
+        if !full.exists() {
+            return Ok(base);
+        }
+        let stem = base.file_stem().unwrap_or_default().to_string_lossy();
+        let ext = base
+            .extension()
+            .map(|e| format!(".{}", e.to_string_lossy()))
+            .unwrap_or_default();
+        let hash8 = hex::encode(&remote_hash[..4]);
+        for i in 0..16u32 {
+            let suffix = if i == 0 {
+                format!("-{hash8}")
+            } else {
+                format!("-{hash8}-{i}")
+            };
+            let name = format!("{stem}{suffix}{ext}");
+            let candidate = base.with_file_name(&name);
+            if !self.vault_path.join(&candidate).exists() {
+                return Ok(candidate);
+            }
+        }
+        anyhow::bail!("could not allocate a conflict copy name for {}", path.display())
+    }
+
+    /// Resolve an unresolved conflict by applying the chosen resolution and
+    /// re-indexing the affected path so the result syncs on the next session.
+    pub async fn resolve_conflict(
+        &mut self,
+        rel: &str,
+        resolution: &crate::conflict::resolution::Resolution,
+    ) -> Result<(), anyhow::Error> {
+        use crate::conflict::resolution::ConflictResolver;
+        use std::fs;
+
+        let entry = self
+            .store
+            .get_unresolved_conflicts()?
+            .into_iter()
+            .find(|e| e.relative_path.to_string_lossy() == rel)
+            .ok_or_else(|| anyhow::anyhow!("no unresolved conflict for {rel}"))?;
+
+        let original = self.vault_path.join(&entry.relative_path);
+        let copy = ConflictResolver::find_conflict_copy(&original);
+
+        match resolution {
+            crate::conflict::resolution::Resolution::KeepLocal => {
+                if let Some(c) = &copy {
+                    let _ = fs::remove_file(c);
+                }
+            }
+            crate::conflict::resolution::Resolution::KeepRemote => {
+                if let Some(c) = &copy {
+                    if c.is_file() {
+                        fs::copy(c, &original)?;
+                        let _ = fs::remove_file(c);
+                    }
+                }
+            }
+            crate::conflict::resolution::Resolution::KeepBoth => {}
+            crate::conflict::resolution::Resolution::OpenFile(_) => {}
+        }
+
+        self.store.mark_conflict_resolved(entry.id)?;
+
+        let hash = hash_file_path(&original)?;
+        let size = file_size(&original)?;
+        let modified = modified_time(&original)?;
+        self.revision_counter += 1;
+        let mut state =
+            FileState::new(entry.relative_path.clone(), hash, size, modified, self.revision_counter);
+        if let Some(existing) = self.store.get_file_state(rel)? {
+            state.synced_hash = existing.synced_hash;
+        }
+        self.store.upsert_file_state(&state)?;
+        self.save_revision_counter()?;
+        info!("Resolved conflict on {rel} ({resolution:?})");
+        Ok(())
+    }
+
+    /// Unresolved conflicts recorded in the store.
+    pub fn conflicts(&self) -> Result<Vec<crate::conflict::record::ConflictEntry>, anyhow::Error> {
+        Ok(self.store.get_unresolved_conflicts()?)
     }
 
     pub fn set_state(&mut self, new_state: SyncStateMachine) {
@@ -137,20 +280,31 @@ impl SyncEngine {
     }
 
     /// Incrementally rescan the vault, updating the index for files that were
-    /// created, modified, or removed on disk since the last scan. Unlike
-    /// `initial_index`, this preserves the revision of unchanged files so the
-    /// sync session does not see spurious conflicts.
-    pub async fn refresh_index(&mut self) -> Result<(), anyhow::Error> {
+    /// created or modified on disk since the last scan. Unlike `initial_index`,
+    /// this preserves the revision of unchanged files so the sync session does
+    /// not see spurious conflicts.
+    ///
+    /// `detect_deletions` controls whether files that vanished from disk are
+    /// tombstoned. Only the authoritative side (the laptop server) should pass
+    /// `true`; clients must NOT auto-tombstone because their disk may be an
+    /// incomplete replica (e.g. the phone's Obsidian app managing files), and a
+    /// phantom tombstone would delete data on the authoritative vault.
+    pub async fn refresh_index(&mut self, detect_deletions: bool) -> Result<(), anyhow::Error> {
         self.set_state(SyncStateMachine::Syncing);
 
-        let result = scan_vault(&self.vault_path).await?;
+        // Incremental scan: only re-hash files whose stat changed since last time.
+        let existing = self.store.get_all_file_states()?;
+        let existing_map: std::collections::HashMap<PathBuf, FileState> = existing
+            .iter()
+            .map(|s| (s.relative_path.clone(), s.clone()))
+            .collect();
+        let result = scan_vault_incremental(&self.vault_path, Some(&existing_map)).await?;
         let mut on_disk: std::collections::HashMap<PathBuf, FileState> =
             std::collections::HashMap::new();
         for file in &result.files {
             on_disk.insert(file.relative_path.clone(), file.clone());
         }
 
-        let existing = self.store.get_all_file_states()?;
         for state in &existing {
             match on_disk.get(&state.relative_path) {
                 Some(disk) => {
@@ -161,6 +315,9 @@ impl SyncEngine {
                         self.revision_counter += 1;
                         let mut updated = disk.clone();
                         updated.revision = self.revision_counter;
+                        // Keep the agreement marker: this edit hasn't been
+                        // synced yet, so the last-synced hash stays the old one.
+                        updated.synced_hash = state.synced_hash;
                         self.store.upsert_file_state(&updated)?;
                         self.queue.push(SyncOperation::Update {
                             path: updated.relative_path.clone(),
@@ -170,7 +327,7 @@ impl SyncEngine {
                         });
                     }
                 }
-                None => {
+                None if detect_deletions => {
                     // Removed from disk → tombstone
                     self.revision_counter += 1;
                     self.store.delete_file_state(&state.relative_path.to_string_lossy())?;
@@ -182,6 +339,10 @@ impl SyncEngine {
                     self.queue.push(SyncOperation::Delete {
                         path: state.relative_path.clone(),
                     });
+                }
+                None => {
+                    // Missing from disk but we don't trust this side's disk view:
+                    // leave the state as-is so the authoritative peer decides.
                 }
             }
         }
@@ -421,27 +582,21 @@ impl SyncEngine {
     ) -> Result<(), anyhow::Error> {
         let rel_str = path.to_string_lossy().to_string();
 
-        // Check for conflict
+        // Reject only when we have local edits that haven't been synced yet —
+        // the client's diff already decided this update is the newer side.
         if let Some(existing) = self.store.get_file_state(&rel_str)? {
-            if existing.content_hash != *content_hash {
-                // Potential conflict - check if local was modified since last sync
-                let conflict_status = detect_conflict(&existing, &FileState::new(
-                    path.to_owned(),
-                    *content_hash,
-                    size,
-                    modified_at,
-                    self.revision_counter,
-                ), 0);
-
-                if matches!(conflict_status, ConflictStatus::Conflict(_)) {
-                    info!("Conflict detected for {}", rel_str);
-                    return Ok(()); // Surface conflict to UI
-                }
+            if existing.content_hash != *content_hash
+                && existing.synced_hash.is_some()
+                && existing.synced_hash != Some(existing.content_hash)
+            {
+                info!("Ignoring update for {} (local edits not yet synced)", rel_str);
+                return Ok(()); // Surface conflict to UI
             }
         }
 
         self.revision_counter += 1;
-        let state = FileState::new(path.to_owned(), *content_hash, size, modified_at, self.revision_counter);
+        let mut state = FileState::new(path.to_owned(), *content_hash, size, modified_at, self.revision_counter);
+        state.synced_hash = Some(*content_hash);
         self.store.upsert_file_state(&state)?;
         self.save_revision_counter()?;
 
@@ -593,7 +748,7 @@ mod tests {
         std::fs::remove_file(&keep_path).unwrap();
         std::fs::write(dir.path().join("new.md"), b"brand new").unwrap();
 
-        engine.refresh_index().await.unwrap();
+        engine.refresh_index(true).await.unwrap();
 
         let manifest = engine.build_manifest();
         assert_eq!(manifest.files.len(), 2);
@@ -628,7 +783,7 @@ mod tests {
             .unwrap()
             .revision;
 
-        engine.refresh_index().await.unwrap();
+        engine.refresh_index(true).await.unwrap();
         let rev_after = engine
             .build_manifest()
             .files
@@ -638,6 +793,52 @@ mod tests {
             .revision;
         assert_eq!(rev_before, rev_after);
         assert_eq!(engine.file_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_index_without_deletion_detection_keeps_state() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("ghost.md");
+        std::fs::write(&path, b"content").unwrap();
+
+        let mut engine = SyncEngine::new(dir.path().to_owned(), "test-device".into())
+            .await
+            .unwrap();
+        engine.initial_index().await.unwrap();
+        assert_eq!(engine.file_count(), 1);
+
+        // File vanishes from disk (e.g. an app managing the folder).
+        std::fs::remove_file(&path).unwrap();
+
+        // Non-authoritative side must NOT tombstone phantom deletions.
+        engine.refresh_index(false).await.unwrap();
+
+        let manifest = engine.build_manifest();
+        assert_eq!(manifest.files.len(), 1);
+        assert!(manifest.tombstones.is_empty());
+        assert!(!engine.has_pending());
+        assert_eq!(engine.file_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_index_with_deletion_detection_tombstones() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("gone.md");
+        std::fs::write(&path, b"content").unwrap();
+
+        let mut engine = SyncEngine::new(dir.path().to_owned(), "test-device".into())
+            .await
+            .unwrap();
+        engine.initial_index().await.unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        // Authoritative side tombstones the deletion.
+        engine.refresh_index(true).await.unwrap();
+
+        let manifest = engine.build_manifest();
+        assert!(manifest.files.is_empty());
+        assert_eq!(manifest.tombstones.len(), 1);
+        assert_eq!(manifest.tombstones[0].relative_path, PathBuf::from("gone.md"));
     }
 
     #[tokio::test]

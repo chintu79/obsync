@@ -10,8 +10,8 @@
 @media(prefers-color-scheme:dark){:root{--bg:#0a0a0a;--surface:#1a1a1a;--border:#262626;--text:#f5f5f5;--text2:#a3a3a3;--accent:#3b82f6;--green:#22c55e;--amber:#f59e0b}}
 body{background:var(--bg);color:var(--text);padding:24px;max-width:640px;margin:0 auto}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px}
-h1{font-size:20px;font-weight:600;margin-bottom:4px;letter-spacing:-0.02em}
-h2{font-size:15px;font-weight:600;margin-bottom:12px}
+h1{font-size:20px;font-weight:600;margin-bottom:4px;letter-spacing:-0.02em;line-height:1.2}
+h2{font-size:15px;font-weight:600;margin-bottom:12px;line-height:1.2}
 .row{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;border-bottom:1px solid var(--border)}
 .row:last-child{border:0}
 .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
@@ -19,47 +19,75 @@ h2{font-size:15px;font-weight:600;margin-bottom:12px}
 .amber{background:var(--amber)}
 .red{background:var(--red)}
 .gray{background:var(--text2)}
-input{flex:1;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;outline:none}
-input:focus{border-color:var(--accent)}
+.copy{font-size:13px}
+.tnum{font-variant-numeric:tabular-nums}
+.path{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+input{flex:1;padding:8px 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:16px}
+@media(min-width:600px){input{font-size:13px}}
+input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 button{background:var(--accent);color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:500}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 button:active{opacity:0.8}
 .btn-sm{background:transparent;color:var(--accent);border:1px solid var(--border);padding:4px 10px;font-size:12px}
-.mono{font-family:monospace;font-size:12px}
-#pairing-qr svg{width:300px;height:300px;display:inline-block}
+.mono{font-family:monospace;font-size:12px;overflow-wrap:break-word}
+#pairing-qr svg{width:100%;max-width:300px;height:auto;display:inline-block}
 .mb8{margin-bottom:8px}
 .mt8{margin-top:8px}
 .gap8{display:flex;gap:8px}
+.gap12{display:flex;gap:12px}
 .flex{display:flex}
 .jcsb{justify-content:space-between}
 .aic{align-items:center}
 .f1{flex:1}
 .text2{color:var(--text2)}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 </style>
 </head>
 <body>
 
 <h1>Obsync</h1>
-<p class="text2 mb8" style="font-size:13px">Local-first P2P vault sync</p>
+<p class="text2 mb8 copy">Local-first P2P vault sync</p>
 
+<main>
 <div class="card">
   <h2>Vault</h2>
   <div id="vault-status">No vault selected</div>
-  <div class="gap8 mt8">
-    <input type="text" id="vault-path" placeholder="~/Documents/SecondBrain" />
-    <button onclick="selectVault()">Open</button>
+  <form class="gap12 mt8" onsubmit="selectVault(); return false;">
+    <label for="vault-path" class="sr-only">Vault path</label>
+    <input type="text" id="vault-path" placeholder="~/Documents/SecondBrain" autocomplete="off" />
+    <button type="submit">Open</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Pair a device</h2>
+  <p class="text2 mb8 copy">Scan this QR code from the Obsync app to pair, or connect directly via IP.</p>
+  <div id="pairing-qr" class="text2" style="text-align:center;padding:8px">Loading QR...</div>
+  <div id="pairing-info" class="mono text2 mt8"></div>
+  <div style="text-align:center;margin-top:8px">
+    <button id="copy-pairing" class="btn">Copy pairing code</button>
   </div>
 </div>
 
 <div class="card">
-  <h2>Pair with phone</h2>
-  <p class="text2 mb8" style="font-size:13px">Scan this QR code from the Obsync app to pair, or connect directly via IP.</p>
-  <div id="pairing-qr" class="text2" style="text-align:center;padding:8px">Loading QR...</div>
-  <div id="pairing-info" class="mono text2 mt8" style="font-size:12px"></div>
+  <h2>Pending access requests</h2>
+  <div id="pending-list" role="status" class="text2">No pending requests</div>
 </div>
 
 <div class="card">
-  <h2>Pending access requests</h2>
-  <div id="pending-list" class="text2">No pending requests</div>
+  <div class="flex jcsb aic mb8">
+    <h2 style="margin:0">Conflicts</h2>
+    <button class="btn-sm" onclick="loadConflicts()">Refresh</button>
+  </div>
+  <div id="conflict-list" class="text2">Loading...</div>
+</div>
+
+<div class="card">
+  <div class="flex jcsb aic mb8">
+    <h2 style="margin:0">Version history</h2>
+    <button class="btn-sm" onclick="loadVersions()">Refresh</button>
+  </div>
+  <div id="version-list" class="text2">Loading...</div>
 </div>
 
 <div class="card">
@@ -79,6 +107,7 @@ button:active{opacity:0.8}
   <h2>Device</h2>
   <div id="device-info" class="text2">No identity</div>
 </div>
+</main>
 
 <script>
 const BASE = 'http://' + location.host + '/api';
@@ -96,7 +125,7 @@ async function refresh() {
   const vault = s.vault;
   if (vault) {
     document.getElementById('vault-status').innerHTML =
-      `<div class="flex aic gap8"><span class="dot green"></span> ${vault.file_count} files <span class="text2">· ${vault.state}</span></div>`;
+      `<div class="flex aic gap8"><span class="dot green"></span> <span class="tnum">${vault.file_count}</span> files <span class="text2">· ${vault.state}</span></div>`;
   }
   if (s.device) {
     document.getElementById('device-info').innerHTML =
@@ -123,7 +152,7 @@ async function loadFiles() {
   const el = document.getElementById('file-list');
   if (!files.length) { el.textContent = 'No files'; return; }
   el.innerHTML = files.slice(0, 20).map(f =>
-    `<div class="row"><span class="f1">${f.path}</span><span class="text2">${f.size < 1024 ? f.size + ' B' : (f.size/1024).toFixed(1) + ' KB'}</span></div>`
+    `<div class="row"><span class="f1 path" title="${f.path}">${f.path}</span><span class="text2 tnum">${f.size < 1024 ? f.size + ' B' : (f.size/1024).toFixed(1) + ' KB'}</span></div>`
   ).join('');
 }
 
@@ -134,29 +163,53 @@ async function loadPairingQr() {
     return;
   }
   document.getElementById('pairing-qr').innerHTML = r.svg;
+  const qrEl = document.getElementById('pairing-qr').firstElementChild;
+  if (qrEl) {
+    qrEl.setAttribute('role', 'img');
+    qrEl.setAttribute('aria-label', 'QR code to pair your phone');
+  }
   const p = r.payload;
   document.getElementById('pairing-info').textContent =
     p.host + ':' + p.port + '  ·  ' + p.device_name + '  ·  fp ' + p.public_key_fingerprint.slice(0, 12);
+  lastPairingPayload = JSON.stringify(p);
+  const copyBtn = document.getElementById('copy-pairing');
+  copyBtn.addEventListener('click', () => copyPairing(copyBtn));
 }
+
+let lastPairingPayload = '';
+
+async function copyPairing(btn) {
+  try {
+    await navigator.clipboard.writeText(lastPairingPayload);
+    btn.textContent = 'Copied';
+    setTimeout(() => { btn.textContent = 'Copy pairing code'; }, 2000);
+  } catch (e) {
+    btn.textContent = 'Copy failed';
+  }
+}
+
+let pendingLastHtml = '';
 
 async function loadPending() {
   const list = await api('/pending');
   const el = document.getElementById('pending-list');
-  if (!list.length) {
-    el.innerHTML = '<span class="text2">No pending requests</span>';
-    return;
+  const html = list.length === 0
+    ? '<span class="text2">No pending requests</span>'
+    : list.map(p =>
+      `<div class="row">
+        <span class="dot amber" aria-hidden="true"></span>
+        <div class="f1">
+          <div>${p.device_name}</div>
+          <div class="mono text2">${p.device_id} · fp ${p.fingerprint.slice(0, 12)}</div>
+        </div>
+        <button class="btn-sm" style="color:var(--green);border-color:var(--green)" onclick="decide('${p.device_id}', true)">Approve</button>
+        <button class="btn-sm" style="color:var(--red);border-color:var(--red)" onclick="decide('${p.device_id}', false)">Reject</button>
+      </div>`
+    ).join('');
+  if (html !== pendingLastHtml) {
+    pendingLastHtml = html;
+    el.innerHTML = html;
   }
-  el.innerHTML = list.map(p =>
-    `<div class="row">
-      <span class="dot amber"></span>
-      <div class="f1">
-        <div>${p.device_name}</div>
-        <div class="mono text2" style="font-size:11px">${p.device_id} · fp ${p.fingerprint.slice(0, 12)}</div>
-      </div>
-      <button class="btn-sm" style="color:var(--green);border-color:var(--green)" onclick="decide('${p.device_id}', true)">Approve</button>
-      <button class="btn-sm" style="color:var(--red);border-color:var(--red)" onclick="decide('${p.device_id}', false)">Reject</button>
-    </div>`
-  ).join('');
 }
 
 async function decide(id, approve) {
@@ -164,10 +217,68 @@ async function decide(id, approve) {
   await loadPending();
 }
 
+async function loadConflicts() {
+  const list = await api('/conflicts');
+  const el = document.getElementById('conflict-list');
+  if (!list.length) { el.innerHTML = '<span class="text2">No conflicts</span>'; return; }
+  el.innerHTML = list.map(c =>
+    `<div class="row">
+      <span class="dot amber" aria-hidden="true"></span>
+      <div class="f1">
+        <div class="f1 path" title="${c.path}">${c.path}</div>
+        <div class="text2 copy">Detected ${new Date(c.detected_at).toLocaleString()}</div>
+      </div>
+      <button class="btn-sm" onclick="resolve('${encodeURIComponent(c.path)}', 'KeepLocal')">Keep local</button>
+      <button class="btn-sm" onclick="resolve('${encodeURIComponent(c.path)}', 'KeepRemote')">Keep remote</button>
+      <button class="btn-sm" onclick="resolve('${encodeURIComponent(c.path)}', 'KeepBoth')">Keep both</button>
+    </div>`
+  ).join('');
+}
+
+async function resolve(path, resolution) {
+  const r = await api('/conflicts/resolve', {
+    method: 'POST',
+    body: JSON.stringify({ path: decodeURIComponent(path), resolution })
+  });
+  if (r.error) { alert(r.error); return; }
+  await loadConflicts();
+  await loadFiles();
+}
+
+async function loadVersions() {
+  const list = await api('/versions');
+  const el = document.getElementById('version-list');
+  if (!list.length) { el.innerHTML = '<span class="text2">No snapshots yet</span>'; return; }
+  el.innerHTML = list.slice(0, 25).map(s =>
+    `<div class="row">
+      <div class="f1">
+        <div class="f1 path" title="${s.path}">${s.path}</div>
+        <div class="text2 copy">${new Date(s.timestamp).toLocaleString()} · ${s.size < 1024 ? s.size + ' B' : (s.size/1024).toFixed(1) + ' KB'}</div>
+      </div>
+      <button class="btn-sm" onclick="restore('${encodeURIComponent(s.path)}', ${s.timestamp})">Restore</button>
+    </div>`
+  ).join('');
+}
+
+async function restore(path, timestamp) {
+  if (!confirm('Restore the version from ' + new Date(timestamp).toLocaleString() + ' for ' + decodeURIComponent(path) + '?')) return;
+  const r = await api('/restore', {
+    method: 'POST',
+    body: JSON.stringify({ path: decodeURIComponent(path), timestamp })
+  });
+  if (r.error) { alert(r.error); return; }
+  await loadVersions();
+  await loadFiles();
+}
+
 refresh();
 loadPairingQr();
 loadPending();
+loadConflicts();
+loadVersions();
 setInterval(loadPending, 2000);
+setInterval(loadConflicts, 10000);
+setInterval(loadVersions, 30000);
 </script>
 </body>
 </html>

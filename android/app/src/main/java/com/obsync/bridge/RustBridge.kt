@@ -29,6 +29,24 @@ object RustBridge {
     // ── Sync Operations ──
     external fun applyOperation(dbPath: String, vaultPath: String, opJson: String): String
 
+    // ── Conflicts ──
+    external fun listConflicts(vaultPath: String, identityJson: String): String
+    external fun resolveConflict(
+        vaultPath: String,
+        identityJson: String,
+        relativePath: String,
+        resolution: String,
+    ): String
+
+    // ── Version snapshots ──
+    external fun listSnapshots(vaultPath: String): String
+    external fun restoreSnapshot(
+        vaultPath: String,
+        identityJson: String,
+        relativePath: String,
+        timestamp: Long,
+    ): String
+
     // ── Hashing ──
     external fun hashFile(path: String): String
 
@@ -40,7 +58,6 @@ object RustBridge {
 
     // ── Pairing ──
     external fun generatePairingPayload(identityJson: String): String
-    external fun parsePairingPayload(qrData: String): String
 
     // ── Encryption ──
     external fun encrypt(data: ByteArray, keyHex: String): ByteArray

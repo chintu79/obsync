@@ -11,11 +11,16 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.obsync.bridge.RustBridge
 import com.obsync.service.SyncService
+import com.obsync.service.SyncServiceState
+import com.obsync.service.SyncServiceStatus
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
 
 data class SyncState(
@@ -28,6 +33,7 @@ data class SyncState(
     val fingerprint: String = "",
     val pairedDevices: List<PairedDevice> = emptyList(),
     val conflicts: List<ConflictEntry> = emptyList(),
+    val snapshots: List<SnapshotEntry> = emptyList(),
     val recentFiles: List<FileEntry> = emptyList(),
     val peerAddress: String = "",
     val peerPort: Int = 42042,
@@ -45,7 +51,21 @@ data class PairedPeer(
     val fingerprint: String,
 )
 
-enum class SyncStatus { Idle, Indexing, Discovering, Connecting, Syncing, Offline, Conflict, Error }
+enum class SyncStatus {
+    Idle, Indexing, Discovering, Connecting, Syncing, Offline, Conflict, Error;
+
+    val label: String
+        get() = when (this) {
+            Idle -> "Up to date"
+            Indexing -> "Checking files"
+            Discovering -> "Finding devices"
+            Connecting -> "Connecting"
+            Syncing -> "Syncing"
+            Offline -> "Offline"
+            Conflict -> "Conflict"
+            Error -> "Error"
+        }
+}
 
 data class PairedDevice(
     val deviceId: String,
@@ -60,6 +80,12 @@ data class ConflictEntry(
     val localHash: String,
     val remoteHash: String,
     val detectedAt: Long,
+)
+
+data class SnapshotEntry(
+    val path: String,
+    val timestamp: Long,
+    val size: Long,
 )
 
 data class FileEntry(
@@ -77,7 +103,45 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
         RustBridge.ensureLoaded()
         loadPairedPeer()
         viewModelScope.launch { loadIdentity() }
-        viewModelScope.launch { loadSavedVault() }
+        viewModelScope.launch {
+            loadSavedVault()
+            maybeAutoStart()
+        }
+        SyncService.state
+            .onEach { s -> applyServiceState(s) }
+            .launchIn(viewModelScope)
+    }
+
+    /** Start the background sync loop once both a vault and a peer are known. */
+    private fun maybeAutoStart() {
+        val s = _state.value
+        if (s.vaultPath.isNotBlank() && s.peerAddress.isNotBlank() && !SyncService.isRunning()) {
+            startSync()
+        }
+    }
+
+    private fun applyServiceState(s: SyncServiceState) {
+        _state.value = when (s.status) {
+            SyncServiceStatus.Idle -> _state.value.copy(
+                syncing = false,
+                status = SyncStatus.Idle,
+                lastSync = s.lastSync.ifEmpty { _state.value.lastSync },
+            )
+            SyncServiceStatus.Connecting -> _state.value.copy(syncing = true, status = SyncStatus.Connecting)
+            SyncServiceStatus.Syncing -> _state.value.copy(syncing = true, status = SyncStatus.Syncing)
+            SyncServiceStatus.Offline -> _state.value.copy(
+                syncing = false,
+                status = SyncStatus.Offline,
+                lastSync = s.lastSync.ifEmpty { _state.value.lastSync },
+            )
+        }
+        if (s.status != SyncServiceStatus.Syncing) {
+            viewModelScope.launch {
+                loadFiles()
+                loadConflicts()
+                loadSnapshots()
+            }
+        }
     }
 
     private fun prefs() =
@@ -111,6 +175,8 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                 status = SyncStatus.Idle,
             )
             loadFiles()
+            loadConflicts()
+            loadSnapshots()
         } catch (_: Exception) {}
     }
 
@@ -166,6 +232,9 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     status = SyncStatus.Idle,
                 )
                 loadFiles()
+                loadConflicts()
+                loadSnapshots()
+                maybeAutoStart()
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     status = SyncStatus.Error,
@@ -252,16 +321,20 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
 
     fun processScannedQr(qrData: String) {
         viewModelScope.launch {
+            val clean = qrData.trim()
             try {
-                val result = RustBridge.parsePairingPayload(qrData)
-                val json = JSONObject(result)
+                val json = JSONObject(clean)
                 val host = json.optString("host", "")
+                val deviceId = json.optString("device_id", "")
+                if (host.isBlank() || deviceId.isBlank()) {
+                    throw JSONException("not an Obsync pairing code (missing \"host\" or \"device_id\")")
+                }
                 val port = json.optInt("port", 42042)
                 val device = PairedPeer(
                     host = host,
                     port = port,
                     deviceName = json.optString("device_name", "Desktop"),
-                    deviceId = json.optString("device_id", ""),
+                    deviceId = deviceId,
                     fingerprint = json.optString("public_key_fingerprint", ""),
                 )
                 savePairedPeer(device)
@@ -272,8 +345,12 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
                     status = SyncStatus.Idle,
                     error = null,
                 )
+                maybeAutoStart()
             } catch (e: Exception) {
-                _state.value = _state.value.copy(error = "Pairing failed: ${e.message}")
+                val snippet = clean.take(80)
+                _state.value = _state.value.copy(
+                    error = "Pairing failed: ${e.message}. Scanned: \"$snippet\""
+                )
             }
         }
     }
@@ -311,12 +388,99 @@ class SyncViewModel(application: Application) : AndroidViewModel(application) {
     fun stopSync() {
         val ctx = getApplication<Application>()
         ctx.stopService(Intent(ctx, SyncService::class.java))
+        SyncService.state.value = SyncServiceState()
         _state.value = _state.value.copy(
             syncing = false,
             status = SyncStatus.Idle,
             lastSync = "Sync stopped",
         )
     }
+
+    private suspend fun loadConflicts() {
+        if (_state.value.vaultPath.isBlank()) return
+        try {
+            val result = RustBridge.listConflicts(_state.value.vaultPath, buildIdentityJson())
+            val json = JSONObject(result)
+            if (json.has("error")) return
+            val arr = json.optJSONArray("conflicts") ?: JSONArray()
+            val entries = (0 until arr.length()).map { i ->
+                val c = arr.getJSONObject(i)
+                ConflictEntry(
+                    path = c.getString("path"),
+                    localHash = c.optString("local_hash", ""),
+                    remoteHash = c.optString("remote_hash", ""),
+                    detectedAt = c.optLong("detected_at", 0L),
+                )
+            }
+            _state.value = _state.value.copy(conflicts = entries)
+        } catch (_: Exception) {}
+    }
+
+    fun resolveConflict(path: String, resolution: String) {
+        viewModelScope.launch {
+            if (_state.value.vaultPath.isBlank()) return@launch
+            try {
+                val result = RustBridge.resolveConflict(
+                    _state.value.vaultPath, buildIdentityJson(), path, resolution
+                )
+                val json = JSONObject(result)
+                if (json.has("error")) {
+                    _state.value = _state.value.copy(error = json.optString("error"))
+                    return@launch
+                }
+                _state.value = _state.value.copy(error = null)
+                loadConflicts()
+                loadSnapshots()
+                loadFiles()
+                maybeAutoStart()
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(error = e.message)
+            }
+        }
+    }
+
+    private suspend fun loadSnapshots() {
+        if (_state.value.vaultPath.isBlank()) return
+        try {
+            val result = RustBridge.listSnapshots(_state.value.vaultPath)
+            val json = JSONObject(result)
+            if (json.has("error")) return
+            val arr = json.optJSONArray("snapshots") ?: JSONArray()
+            val entries = (0 until arr.length()).map { i ->
+                val s = arr.getJSONObject(i)
+                SnapshotEntry(
+                    path = s.getString("path"),
+                    timestamp = s.getLong("timestamp"),
+                    size = s.optLong("size", 0L),
+                )
+            }
+            _state.value = _state.value.copy(snapshots = entries)
+        } catch (_: Exception) {}
+    }
+
+    fun restoreSnapshot(path: String, timestamp: Long) {
+        viewModelScope.launch {
+            if (_state.value.vaultPath.isBlank()) return@launch
+            try {
+                val result = RustBridge.restoreSnapshot(
+                    _state.value.vaultPath, buildIdentityJson(), path, timestamp
+                )
+                val json = JSONObject(result)
+                if (json.has("error")) {
+                    _state.value = _state.value.copy(error = json.optString("error"))
+                    return@launch
+                }
+                _state.value = _state.value.copy(error = null)
+                loadSnapshots()
+                loadFiles()
+                maybeAutoStart()
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(error = e.message)
+            }
+        }
+    }
+
+    fun refreshConflicts() { viewModelScope.launch { loadConflicts() } }
 
     private suspend fun loadFiles() {
         try {

@@ -1,6 +1,7 @@
 pub mod atomic;
 pub mod ignore;
 pub mod io;
+pub mod versioning;
 pub mod watcher;
 
 pub type FileSize = u64;

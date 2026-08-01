@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
@@ -28,28 +29,34 @@ fun DevicesScreen(vm: SyncViewModel, nav: NavController) {
                 title = { Text("Devices") },
                 navigationIcon = { IconButton(onClick = { nav.popBackStack() }) { Icon(Icons.Default.ArrowBack, "Back") } },
                 actions = {
-                    IconButton(onClick = { nav.navigate("pairing") }) { Icon(Icons.Default.QrCodeScanner, "Pair") }
+                    IconButton(onClick = { nav.navigate("pairing") { launchSingleTop = true } }) { Icon(Icons.Default.QrCodeScanner, "Pair") }
                 }
             )
         }
     ) { pad ->
         Column(Modifier.fillMaxSize().padding(pad).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("This Device", style = MaterialTheme.typography.titleSmall)
+            Text("This device", style = MaterialTheme.typography.titleSmall)
             Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
                 Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.PhoneAndroid, null, modifier = Modifier.size(32.dp), tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(12.dp))
-                    Column {
+                    Column(Modifier.weight(1f)) {
                         Text(state.deviceName, fontWeight = FontWeight.SemiBold)
-                        Text(state.fingerprint, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            state.fingerprint,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
                 }
             }
 
             Spacer(Modifier.height(8.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("Paired Devices", style = MaterialTheme.typography.titleSmall)
-                FilledTonalButton(onClick = { nav.navigate("pairing") }) { Text("+ Pair New") }
+                Text("Paired devices", style = MaterialTheme.typography.titleSmall)
+                FilledTonalButton(onClick = { nav.navigate("pairing") { launchSingleTop = true } }) { Text("+ Pair new") }
             }
 
             if (state.pairedDevices.isEmpty()) {
@@ -57,8 +64,8 @@ fun DevicesScreen(vm: SyncViewModel, nav: NavController) {
                     Column(Modifier.padding(24.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(Icons.Default.DevicesOther, null, modifier = Modifier.size(36.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.height(8.dp))
-                        Text("No paired devices", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("Scan the QR code on your desktop", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("No paired devices", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Scan the QR code on your desktop", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             } else {
@@ -69,9 +76,15 @@ fun DevicesScreen(vm: SyncViewModel, nav: NavController) {
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(d.deviceName, fontWeight = FontWeight.Medium)
-                                Text(d.fingerprint, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    d.fingerprint,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
                             }
-                            Text(if (d.connected) "Connected" else "Offline", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(if (d.connected) "Connected" else "Offline", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }

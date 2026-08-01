@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.obsync.service.SyncService
 import com.obsync.ui.*
 import com.obsync.viewmodel.SyncViewModel
 
@@ -27,11 +28,18 @@ class MainActivity : ComponentActivity() {
                         composable("dashboard") { DashboardScreen(viewModel, nav) }
                         composable("pairing") { PairingScreen(viewModel, nav) }
                         composable("devices") { DevicesScreen(viewModel, nav) }
-                        composable("conflicts") { ConflictsScreen(viewModel) }
-                        composable("settings") { SettingsScreen(viewModel) }
+                        composable("conflicts") { ConflictsScreen(viewModel, nav) }
+                        composable("settings") { SettingsScreen(viewModel, nav) }
+                        composable("versions") { VersionsScreen(viewModel, nav) }
                     }
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Returning to the app: sync immediately if the loop is running.
+        SyncService.syncNow()
     }
 }

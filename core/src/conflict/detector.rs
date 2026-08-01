@@ -1,90 +1,115 @@
-use std::path::PathBuf;
+use crate::index::state::FileState;
 
-use crate::filesystem::Blake3Hash;
-use crate::index::state::{FileState, RevisionId};
-
-#[derive(Debug, Clone)]
-pub struct ConflictRecord {
-    pub path: PathBuf,
-    pub local_hash: Blake3Hash,
-    pub remote_hash: Blake3Hash,
-    pub local_revision: RevisionId,
-    pub remote_revision: RevisionId,
-    pub base_revision: RevisionId,
-    pub detected_at: i64,
+/// How a path with different content on both sides should be resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SideOutcome {
+    /// Both sides edited within the window — leave untouched, surface to the user.
+    Conflict,
+    /// Local side is (clearly) newer — push local.
+    LocalWins,
+    /// Remote side is (clearly) newer — pull remote.
+    RemoteWins,
 }
 
-pub enum ConflictStatus {
-    NoConflict,
-    Conflict(ConflictRecord),
-    SameChange, // Both made identical change
-}
-
-pub fn detect_conflict(
-    local: &FileState,
-    remote: &FileState,
-    base_revision: RevisionId,
-) -> ConflictStatus {
-    // Same hash = no conflict (even if both changed, it's the same change)
+/// Revisions are per-engine local counters incremented on any edit, so a file
+/// that was ever edited on both devices has `revision > 0` on both sides forever.
+/// A hash difference alone therefore does NOT prove a genuine conflict — one
+/// side's content may simply be a later edit of the other's.
+///
+/// The authoritative signal is [`FileState::synced_hash`]: the content hash the
+/// last sync agreed on. If one side still has exactly that content, it never
+/// changed since the agreement, so the other side's version is simply newer
+/// (pull/push, never a conflict). A conflict only exists when BOTH sides
+/// changed since the agreement. When agreement info is missing (pre-migration
+/// rows), fall back to comparing modification times — the newer side wins.
+pub fn resolve_divergence(local: &FileState, remote: &FileState) -> SideOutcome {
     if local.content_hash == remote.content_hash {
-        return ConflictStatus::SameChange;
+        return SideOutcome::RemoteWins; // caller should treat as no-op
     }
-
-    // Only one side changed since base = no conflict
-    if local.revision <= base_revision || remote.revision <= base_revision {
-        return ConflictStatus::NoConflict;
+    let local_unchanged = local.synced_hash == Some(local.content_hash);
+    let remote_unchanged = remote.synced_hash == Some(remote.content_hash);
+    match (local_unchanged, remote_unchanged) {
+        (true, _) => SideOutcome::RemoteWins, // local never changed since agreement → take remote
+        (_, true) => SideOutcome::LocalWins, // remote never changed since agreement → push local
+        (false, false) => {
+            if local.synced_hash.is_some() && remote.synced_hash.is_some() {
+                SideOutcome::Conflict
+            } else if local.modified_at >= remote.modified_at {
+                SideOutcome::LocalWins
+            } else {
+                SideOutcome::RemoteWins
+            }
+        }
     }
-
-    // Both changed since base with different content = conflict
-    ConflictStatus::Conflict(ConflictRecord {
-        path: local.relative_path.clone(),
-        local_hash: local.content_hash,
-        remote_hash: remote.content_hash,
-        local_revision: local.revision,
-        remote_revision: remote.revision,
-        base_revision,
-        detected_at: chrono::Utc::now().timestamp_millis(),
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
     use crate::index::state::SyncState;
 
-    fn make_state(path: &str, hash_byte: u8, rev: u64) -> FileState {
+    fn make_state(path: &str, hash_byte: u8, rev: u64, synced: Option<u8>) -> FileState {
         let mut hash = [0u8; 32];
         hash[0] = hash_byte;
+        let mut synced_hash = None;
+        if let Some(b) = synced {
+            let mut sh = [0u8; 32];
+            sh[0] = b;
+            synced_hash = Some(sh);
+        }
         FileState {
             relative_path: PathBuf::from(path),
             content_hash: hash,
             size: 100,
-            modified_at: (rev * 1000) as i64,
+            modified_at: rev as i64,
             revision: rev,
             sync_state: SyncState::Synced,
+            synced_hash,
         }
     }
 
     #[test]
-    fn test_no_conflict_identical() {
-        let s = make_state("a.md", 1, 2);
-        let result = detect_conflict(&s, &s, 1);
-        assert!(matches!(result, ConflictStatus::SameChange));
+    fn test_resolve_sequential_edits_push() {
+        // Agreed on H1. Local then edited to H2 (synced still H1); remote
+        // still holds the agreed H1 → local's edit is a plain update, push it.
+        let local = make_state("a.md", 2, 3, Some(1));
+        let remote = make_state("a.md", 1, 2, Some(1));
+        assert_eq!(resolve_divergence(&local, &remote), SideOutcome::LocalWins);
     }
 
     #[test]
-    fn test_no_conflict_one_side_unchanged() {
-        let local = make_state("a.md", 1, 2);
-        let remote = make_state("a.md", 2, 1); // remote hasn't changed
-        let result = detect_conflict(&local, &remote, 1);
-        assert!(matches!(result, ConflictStatus::NoConflict));
+    fn test_resolve_sequential_edits_pull() {
+        // Agreed on H1. Remote then edited to H2; local still holds H1.
+        let local = make_state("a.md", 1, 2, Some(1));
+        let remote = make_state("a.md", 2, 3, Some(1));
+        assert_eq!(resolve_divergence(&local, &remote), SideOutcome::RemoteWins);
     }
 
     #[test]
-    fn test_conflict_detected() {
-        let local = make_state("a.md", 1, 2);
-        let remote = make_state("a.md", 2, 2);
-        let result = detect_conflict(&local, &remote, 1);
-        assert!(matches!(result, ConflictStatus::Conflict(_)));
+    fn test_resolve_genuine_conflict() {
+        // Agreed on H0. Both sides then edited to different content.
+        let local = make_state("a.md", 1, 3, Some(0));
+        let remote = make_state("a.md", 2, 2, Some(0));
+        assert_eq!(resolve_divergence(&local, &remote), SideOutcome::Conflict);
+    }
+
+    #[test]
+    fn test_resolve_same_hash_is_noop() {
+        let local = make_state("a.md", 1, 3, Some(1));
+        let remote = make_state("a.md", 1, 2, Some(0));
+        assert_eq!(resolve_divergence(&local, &remote), SideOutcome::RemoteWins);
+    }
+
+    #[test]
+    fn test_resolve_no_agreement_falls_back_to_mtime() {
+        // Pre-migration rows have no synced_hash → newer mtime wins.
+        let mut local = make_state("a.md", 1, 3, None);
+        let mut remote = make_state("a.md", 2, 1, None);
+        local.modified_at = 23 * 3600 * 1000;
+        remote.modified_at = 21 * 3600 * 1000;
+        assert_eq!(resolve_divergence(&local, &remote), SideOutcome::LocalWins);
+        assert_eq!(resolve_divergence(&remote, &local), SideOutcome::RemoteWins);
     }
 }

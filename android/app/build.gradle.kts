@@ -19,7 +19,6 @@ fun keystoreProp(name: String): String? {
 val rustTargets = mapOf(
     "arm64-v8a"   to "aarch64-linux-android",
     "armeabi-v7a" to "armv7-linux-androideabi",
-    "x86_64"      to "x86_64-linux-android",
 )
 
 val rustBuildDir = file("${rootProject.projectDir}/../target")
@@ -57,7 +56,7 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
-        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
 
     signingConfigs {

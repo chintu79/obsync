@@ -23,6 +23,9 @@ pub struct FileState {
     pub modified_at: i64,
     pub revision: RevisionId,
     pub sync_state: SyncState,
+    /// Content hash the last sync with a peer agreed on. `None` = no agreement
+    /// recorded yet (pre-migration rows); conflict detection falls back to mtime.
+    pub synced_hash: Option<Blake3Hash>,
 }
 
 impl FileState {
@@ -40,6 +43,7 @@ impl FileState {
             modified_at,
             revision,
             sync_state: SyncState::Synced,
+            synced_hash: None,
         }
     }
 }

@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tokio::task;
 
@@ -14,6 +15,16 @@ pub struct ScanResult {
 }
 
 pub async fn scan_vault(vault_path: &Path) -> io::Result<ScanResult> {
+    scan_vault_incremental(vault_path, None).await
+}
+
+/// Like [`scan_vault`], but skips re-hashing files whose (size, mtime) already
+/// match the provided existing states. A sync session then only hashes files
+/// that actually changed on disk — cheap enough to run before every sync.
+pub async fn scan_vault_incremental(
+    vault_path: &Path,
+    existing: Option<&HashMap<PathBuf, FileState>>,
+) -> io::Result<ScanResult> {
     let vault = vault_path.to_owned();
     let mut files = Vec::new();
     let mut dirs_to_scan = vec![vault.clone()];
@@ -38,20 +49,29 @@ pub async fn scan_vault(vault_path: &Path) -> io::Result<ScanResult> {
                 let size = file_size(&path)?;
                 let modified = modified_time(&path)?;
 
-                // Spawn hashing to a blocking thread for large files
-                let path_clone = path.clone();
-                let hash: Blake3Hash = task::spawn_blocking(move || hash_file_path(&path_clone))
-                    .await
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))??;
+                // Reuse the stored hash when the stat looks unchanged.
+                let content_hash: Blake3Hash = match existing {
+                    Some(states) if states.get(&relative).map_or(false, |s| s.size == size && s.modified_at == modified) => {
+                        states[&relative].content_hash
+                    }
+                    _ => {
+                        // Spawn hashing to a blocking thread for large files
+                        let path_clone = path.clone();
+                        task::spawn_blocking(move || hash_file_path(&path_clone))
+                            .await
+                            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))??
+                    }
+                };
 
                 revision_counter += 1;
                 files.push(FileState {
                     relative_path: relative,
-                    content_hash: hash,
+                    content_hash,
                     size,
                     modified_at: modified,
                     revision: revision_counter,
                     sync_state: SyncState::Synced,
+                    synced_hash: None,
                 });
             }
         }
@@ -80,6 +100,7 @@ pub async fn scan_file(vault_path: &Path, relative: &Path) -> io::Result<FileSta
         modified_at: modified,
         revision: 0, // caller assigns
         sync_state: SyncState::Synced,
+        synced_hash: None,
     })
 }
 

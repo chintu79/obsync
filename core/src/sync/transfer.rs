@@ -75,7 +75,7 @@ impl FileReceiver {
         let parent = dest.parent().unwrap_or(Path::new(""));
         tokio::fs::create_dir_all(parent).await?;
 
-        let mut file = tokio::fs::File::create(dest).await?;
+        let mut writer = AtomicWriter::new(dest.to_path_buf())?;
         let mut hasher = blake3::Hasher::new();
         let mut buf = vec![0u8; CHUNK_SIZE];
         let mut received = 0u64;
@@ -84,11 +84,12 @@ impl FileReceiver {
             let to_read = std::cmp::min(CHUNK_SIZE as u64, file_size - received) as usize;
             let mut read_buf = &mut buf[..to_read];
             reader.read_exact(&mut read_buf).await?;
-            file.write_all(read_buf).await?;
+            writer.writer().write_all(read_buf)?;
             hasher.update(read_buf);
             received += to_read as u64;
         }
 
+        writer.commit()?;
         Ok(hasher.finalize().into())
     }
 

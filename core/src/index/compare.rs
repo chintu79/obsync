@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::conflict::detector::{resolve_divergence, SideOutcome};
 use crate::index::state::{FileState, Manifest, RevisionId, Tombstone};
 use crate::sync::delta::SyncOperation;
 
@@ -55,19 +56,19 @@ pub fn compare_manifests(
     for (path, local_file) in &local_map {
         if let Some(remote_file) = remote_map.get(path) {
             if local_file.content_hash != remote_file.content_hash {
-                // Detect conflict: both changed from base
-                if local_file.revision > 0 && remote_file.revision > 0 {
-                    conflicts.push(((*local_file).clone(), (*remote_file).clone()));
-                } else {
-                    // Prefer newer revision
-                    if local_file.modified_at > remote_file.modified_at {
+                match resolve_divergence(local_file, remote_file) {
+                    SideOutcome::Conflict => {
+                        conflicts.push(((*local_file).clone(), (*remote_file).clone()))
+                    }
+                    SideOutcome::LocalWins => {
                         operations.push(SyncOperation::Update {
                             path: (*path).clone(),
                             content_hash: local_file.content_hash,
                             size: local_file.size,
                             modified_at: local_file.modified_at,
                         });
-                    } else {
+                    }
+                    SideOutcome::RemoteWins => {
                         operations.push(SyncOperation::Update {
                             path: (*path).clone(),
                             content_hash: remote_file.content_hash,
@@ -119,6 +120,7 @@ mod tests {
             modified_at: (rev * 1000) as i64,
             revision: rev,
             sync_state: SyncState::Synced,
+            synced_hash: None,
         }
     }
 
@@ -184,15 +186,20 @@ mod tests {
 
     #[test]
     fn test_conflicting_changes() {
+        // Both sides changed since the agreement (synced_hash = H0) → conflict.
+        let mut local = make_file("c.md", 1, 2);
+        local.synced_hash = Some(make_file("c.md", 0, 0).content_hash);
+        let mut remote = make_file("c.md", 2, 2);
+        remote.synced_hash = Some(make_file("c.md", 0, 0).content_hash);
         let local = Manifest {
             device_id: "local".into(),
-            files: vec![make_file("c.md", 1, 2)],
+            files: vec![local],
             tombstones: vec![],
             revision_counter: 2,
         };
         let remote = Manifest {
             device_id: "remote".into(),
-            files: vec![make_file("c.md", 2, 2)],
+            files: vec![remote],
             tombstones: vec![],
             revision_counter: 2,
         };
@@ -214,6 +221,7 @@ mod tests {
                 modified_at: 1000,
                 revision: 1,
                 sync_state: SyncState::Synced,
+                synced_hash: None,
             }],
             tombstones: vec![],
             revision_counter: 1,
@@ -227,6 +235,7 @@ mod tests {
                 modified_at: 1000,
                 revision: 1,
                 sync_state: SyncState::Synced,
+                synced_hash: None,
             }],
             tombstones: vec![Tombstone {
                 relative_path: PathBuf::from("old.md"),

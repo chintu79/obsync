@@ -23,6 +23,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v4
+        with:
+          enablement: true
+          token: ${{ secrets.PAGES_PAT }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs

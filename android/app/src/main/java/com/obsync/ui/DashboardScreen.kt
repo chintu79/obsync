@@ -14,6 +14,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -132,9 +133,6 @@ fun VaultCard(state: SyncState) {
                 Text(state.vaultName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Text("${state.fileCount} files · ${state.status.label}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (state.fileCount > 0) {
-                Text("${state.fileCount}", style = MaterialTheme.typography.bodyMedium.copy(fontFeatureSettings = "tnum"), fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
         }
     }
 }
@@ -148,7 +146,14 @@ fun PeerCard(vm: SyncViewModel, state: SyncState, nav: NavController) {
 
             if (state.pairedPeer != null) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(10.dp).clip(CircleShape).background(if (state.syncing) Color(0xFF16A34A) else Color(0xFF737373)))
+                    Box(
+                        Modifier.size(10.dp).clip(CircleShape).background(
+                            when {
+                                state.syncing -> LocalStatusColors.current.syncing
+                                else -> LocalStatusColors.current.idle
+                            }
+                        )
+                    )
                     Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
                         Text(state.pairedPeer.deviceName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
@@ -228,7 +233,11 @@ fun DeviceCard(state: SyncState, nav: NavController) {
             } else {
                 state.pairedDevices.forEach { d ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(8.dp).clip(CircleShape).background(if (d.connected) Color(0xFF16A34A) else Color(0xFF737373)))
+                        Box(
+                            Modifier.size(8.dp).clip(CircleShape).background(
+                                if (d.connected) LocalStatusColors.current.idle else LocalStatusColors.current.offline
+                            )
+                        )
                         Spacer(Modifier.width(8.dp))
                         Text(d.deviceName, style = MaterialTheme.typography.titleSmall)
                         Spacer(Modifier.weight(1f))
@@ -254,12 +263,15 @@ fun FileRow(path: String, size: Long) {
     }
 }
 
-fun statusColor(s: SyncStatus) = when (s) {
-    SyncStatus.Idle -> Color(0xFF16A34A)
-    SyncStatus.Indexing, SyncStatus.Syncing, SyncStatus.Discovering, SyncStatus.Connecting -> Color(0xFFD97706)
-    SyncStatus.Offline -> Color(0xFF737373)
-    SyncStatus.Conflict -> Color(0xFFDC2626)
-    SyncStatus.Error -> Color(0xFFDC2626)
+@Composable
+fun statusColor(s: SyncStatus): Color {
+    val c = LocalStatusColors.current
+    return when (s) {
+        SyncStatus.Idle -> c.idle
+        SyncStatus.Indexing, SyncStatus.Syncing, SyncStatus.Discovering, SyncStatus.Connecting -> c.syncing
+        SyncStatus.Offline -> c.offline
+        SyncStatus.Conflict, SyncStatus.Error -> c.conflict
+    }
 }
 
 @Composable
@@ -270,14 +282,26 @@ fun BottomBar(nav: NavController) {
         NavigationBarItem(
             selected = currentRoute == "dashboard",
             onClick = { nav.navigate("dashboard") { popUpTo(nav.graph.startDestinationId) { saveState = true }; launchSingleTop = true; restoreState = true } },
-            icon = { Icon(Icons.Default.Home, null) }, label = { Text("Home") })
+            icon = {
+                if (currentRoute == "dashboard") Icon(Icons.Filled.Home, null)
+                else Icon(Icons.Outlined.Home, null)
+            },
+            label = { Text("Home") })
         NavigationBarItem(
             selected = currentRoute == "devices",
             onClick = { nav.navigate("devices") { launchSingleTop = true } },
-            icon = { Icon(Icons.Default.Devices, null) }, label = { Text("Devices") })
+            icon = {
+                if (currentRoute == "devices") Icon(Icons.Filled.Devices, null)
+                else Icon(Icons.Outlined.Devices, null)
+            },
+            label = { Text("Devices") })
         NavigationBarItem(
             selected = currentRoute == "conflicts",
             onClick = { nav.navigate("conflicts") { launchSingleTop = true } },
-            icon = { Icon(Icons.Default.Warning, null) }, label = { Text("Conflicts") })
+            icon = {
+                if (currentRoute == "conflicts") Icon(Icons.Filled.Warning, null)
+                else Icon(Icons.Outlined.Warning, null)
+            },
+            label = { Text("Conflicts") })
     }
 }

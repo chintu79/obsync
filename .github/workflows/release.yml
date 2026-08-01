@@ -135,6 +135,68 @@ jobs:
           name: obsync-server-${{ matrix.target }}
           path: obsync-server-${{ matrix.target }}
 
+  # ------------------------------------------------------- Desktop app installers
+  desktop-apps:
+    name: Desktop app (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            asset: obsync-desktop-linux
+          - os: macos-latest
+            platform: macos
+            asset: obsync-desktop-macos
+          - os: windows-latest
+            platform: windows
+            asset: obsync-desktop-windows
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: tauri-${{ matrix.platform }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Build Tauri app
+        working-directory: desktop
+        run: |
+          npm ci
+          npm run tauri build
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: obsync-desktop-${{ matrix.platform }}
+          path: |
+            src-tauri/target/release/bundle/**/*.{appimage,deb,rpm,exe,msi,dmg,app,tar.gz}
+
   # ------------------------------------------------------------------- Release
   release:
     name: Publish GitHub Release
@@ -142,7 +204,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    needs: [android-apk, server-binaries]
+    needs: [android-apk, server-binaries, desktop-apps]
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -162,7 +224,14 @@ jobs:
             - `obsync-${{ github.ref_name }}.apk` — install on your phone (enable "Install unknown apps").
             - Pick a release with `vX.Y.Z`; the tag notes the changes.
 
-            ### Desktop server
+            ### Desktop app (recommended)
+            The easiest way to run the dashboard — download the installer for your OS and double-click it.
+            No terminal required.
+            - Linux: `obsync-desktop-linux` (.deb / AppImage)
+            - macOS: `obsync-desktop-macos` (.dmg)
+            - Windows: `obsync-desktop-windows` (.exe installer / .msi)
+
+            ### Desktop server (headless / advanced)
             Download the binary for your OS, then run it — it opens the pairing
             dashboard at http://localhost:42021 automatically:
             - Linux: `obsync-server-linux-x86_64` (or `./run-server.sh` from source)
@@ -171,4 +240,5 @@ jobs:
           files: |
             artifacts/obsync-*.apk
             artifacts/obsync-server-*
+            artifacts/**/*.{appimage,deb,rpm,exe,msi,dmg,app,tar.gz}
           generate_release_notes: true

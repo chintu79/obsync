@@ -25,11 +25,11 @@ A shared Rust library containing all synchronization logic. Both desktop and And
 
 ```
 core/
-├── filesystem/       # File I/O, watcher abstraction, atomic writes
-│   ├── watcher.rs    # Platform-native filesystem event watcher
+├── filesystem/       # File I/O, atomic writes, versioning
 │   ├── io.rs         # Streaming read/write, hashing
 │   ├── atomic.rs     # Safe atomic write operations
-│   └── ignore.rs     # Editor temp file filtering
+│   ├── ignore.rs     # Editor temp file filtering
+│   └── versioning.rs # Snapshot/version preservation
 │
 ├── index/            # Vault state tracking
 │   ├── state.rs      # FileState record, serialization
@@ -39,8 +39,7 @@ core/
 │
 ├── sync/             # Core sync orchestration
 │   ├── engine.rs     # Main sync state machine
-│   ├── queue.rs      # Persistent change queue
-│   ├── transfer.rs   # Chunked file transfer
+│   ├── peer.rs       # Client/server sync-session logic
 │   └── delta.rs      # Operations from state comparison
 │
 ├── conflict/         # Conflict detection & resolution
@@ -49,44 +48,16 @@ core/
 │   └── resolution.rs # Version preservation logic
 │
 ├── network/          # P2P networking
-│   ├── discovery.rs  # mDNS peer discovery
-│   ├── transport.rs  # Encrypted stream (QUIC/TCP+TLS)
-│   ├── peer.rs       # Connected peer management
+│   ├── peer.rs       # Hand-rolled TCP sync protocol
 │   └── protocol.rs   # Message types, serialization
 │
 ├── security/         # Cryptography & identity
 │   ├── identity.rs   # Device keypair generation & storage
-│   ├── pairing.rs    # QR code pairing protocol
-│   └── crypto.rs     # Encrypt/decrypt, key exchange
+│   └── crypto.rs     # Encrypt/decrypt session cipher
 │
 └── storage/          # Persistent storage
     ├── config.rs     # Application configuration
-    ├── db.rs         # SQLite connection management
-    └── migrations.rs # Schema migrations
-```
-
-### Data Flow: File Change → Sync
-
-```
-Filesystem Event
-      ↓
-Watcher (debounced)
-      ↓
-Indexer (hash if changed)
-      ↓
-State Updated (SQLite)
-      ↓
-Sync Engine (determine operation)
-      ↓
-Conflict Check
-      ↓
-Queue Change
-      ↓
-Transfer (encrypted, chunked)
-      ↓
-Remote applies (atomic write)
-      ↓
-Remote Index Updated
+    └── db.rs         # SQLite connection management
 ```
 
 ### Data Flow: Full Sync on Connect
@@ -94,21 +65,29 @@ Remote Index Updated
 ```
 Peer Connected
       ↓
+Hello / HelloAck handshake (X25519 session key)
+      ↓
 Exchange Manifests
       ↓
 Compare States (manifest diff)
       ↓
 Generate Operations (create/update/delete)
       ↓
-Process Queue (prioritized)
+Request + stream each changed file (chunked)
       ↓
-   small files → transfer directly
-   large files → chunked streaming
+Verify Integrity (BLAKE3)
       ↓
-Verify Integrity
-      ↓
-Apply + Index
+Apply + Index (atomic write)
 ```
+
+### Change Discovery
+
+File changes are NOT detected by a filesystem watcher. The server refreshes its
+index (`engine.refresh_index(true)`) at the start of every sync session, walking
+the vault and re-hashing changed files, so edits made directly on the laptop
+disk always reach the phone. The authoritative server passes
+`detect_deletions = true`; the phone client passes `false` (additive-only)
+because its disk may be an incomplete replica.
 
 ---
 
@@ -121,9 +100,10 @@ struct FileState {
     relative_path: PathBuf,
     content_hash: Blake3Hash,    // 32 bytes
     size: u64,
-    modified_at: Timestamp,
+    modified_at: i64,            // unix ms
     revision: RevisionId,        // monotonic per-device counter
     sync_state: SyncState,
+    synced_hash: Option<Blake3Hash>, // hash last sync agreed on (None = pre-migration)
 }
 ```
 
@@ -166,9 +146,15 @@ struct ProtocolMessage {
     version: u8,             // protocol version
     message_type: MessageType,
     request_id: u64,
-    payload: Vec<u8>,        // encrypted
+    payload: Vec<u8>,        // bincode-serialized
 }
 ```
+
+Message types (see `network/protocol.rs`): `Hello`/`HelloAck` (handshake),
+`Manifest`, `FileRequest`, `FileChunk` (sync), `SyncOperation`/`OperationAck`
+(ops), `Ping`/`Disconnect` (control). Files are transferred as chunked
+`FileRequest`/`FileChunk` exchanges, each chunk verified against the target
+BLAKE3 hash as it is applied.
 
 ---
 
@@ -178,54 +164,58 @@ struct ProtocolMessage {
                  ┌──────────┐
                  │   IDLE    │
                  └────┬─────┘
-                      │ discover
+                      │ connect to known peer
                       v
-              ┌───────────────┐
-              │  DISCOVERING  │
-              └───────┬───────┘
-                      │ peer found
-                      v
-              ┌───────────────┐
-              │  CONNECTING   │
-              └───────┬───────┘
-                 ┌────┴────┐
-                 │         │
-                 v         v
-           ┌─────────┐  ┌──────────┐
-           │ SYNCING │  │  OFFLINE │
-           └────┬────┘  └────┬─────┘
-                │            │ peer found
-                v            │
-           ┌──────────┐      │
-           │ CONFLICT │      │
-           └────┬─────┘      │
-                │ resolved    │
-                v             v
-              ┌──────────┐
-              │   IDLE    │
-              └──────────┘
+               ┌───────────────┐
+               │  CONNECTING   │
+               └───────┬───────┘
+                  ┌────┴────┐
+                  │         │
+                  v         v
+            ┌─────────┐  ┌──────────┐
+            │ SYNCING │  │  OFFLINE │
+            └────┬────┘  └────┬─────┘
+                 │            │ peer found
+                 v            │
+            ┌──────────┐      │
+            │ CONFLICT │      │
+            └────┬─────┘      │
+                 │ resolved    │
+                 v             v
+               ┌──────────┐
+               │   IDLE    │
+               └──────────┘
 ```
-
----
 
 ## Conflict Detection Algorithm
 
 ```
-1. For each file being synced:
-   a. Local revision: R_local
-   b. Remote revision: R_remote
-   c. Common base: R_base (tracked in metadata)
+1. For each file present on both sides with different content:
+   a. Was either side unchanged since the last sync agreement?
 
-2. Conflict if:
-   R_local > R_base AND R_remote > R_base
-   AND content_hash(local) != content_hash(remote)
+2. The agreement signal is synced_hash (the content hash the last sync agreed
+   on). Revisions are per-device local counters and are NOT a reliable base:
+   a file edited on both devices ever has revision > 0 on both sides.
 
-3. On conflict:
-   - Write local → filename.md
+3. Cases:
+   - local unchanged since agreement (local.synced_hash == local hash)
+     → remote is simply newer → pull remote
+   - remote unchanged since agreement → local is simply newer → push local
+   - BOTH changed since agreement → genuine conflict
+   - No agreement recorded (pre-migration, synced_hash is NULL)
+     → newer mtime wins
+
+4. On conflict:
+   - Leave the working copy untouched; both versions preserved
    - Write remote → filename.conflict-{device_id}.md
    - Record ConflictRecord in DB
-   - Surface in UI
+   - Surface in UI (the user keeps one and discards the other)
 ```
+
+> Revisions are per-engine local counters, so "revision > 0 on both sides"
+> must NEVER be treated as "both changed since last sync" — any hash
+> difference would otherwise be a permanent false conflict. The only correct
+> signal is `file_states.synced_hash`. See `conflict/detector.rs`.
 
 ---
 
@@ -235,29 +225,32 @@ struct ProtocolMessage {
 
 ```
 DeviceIdentity:
-  - device_id: UUID v4
+  - device_id: UUID v4 (hand-rolled from OS RNG)
   - keypair: X25519 (static)
-  - created_at: Timestamp
+  - created_at: unix ms
   - label: human-readable name
 ```
+
+Persisted via `ConfigStore` (hex-encoded) in the vault's obsync config.
 
 ### Pairing Flow
 
 ```
 Desktop                          Phone
    │                               │
-   │── Generate ephemeral key ────→│ (QR content)
-   │←── Encrypted payload ────────│
-   │── Verify ────────────────────→│
-   │←── Confirm ──────────────────│
+   │── QR code (host, port, id) ──→│ (phone scans)
+   │←── Hello (device id, fp) ────│
+   │── approve/reject (HTTP) ────→│
    │                               │
-   Both persist peer's static key
+   Approved device fingerprints persist in ~/.obsync-approved.json
 ```
 
 ### Transport Security
 
-- Noise Protocol Framework (NX pattern) or equivalent
-- Each message encrypted with per-session key derived via X25519 + AES-256-GCM / ChaCha20-Poly1305
+- X25519 key agreement for a per-session AES-256-GCM key
+- Every sync session is encrypted with that key
+- Hello payloads carry the peer's public-key fingerprint; the server only
+  accepts connections from approved devices
 
 ---
 
@@ -270,7 +263,8 @@ CREATE TABLE file_states (
     size INTEGER NOT NULL,
     modified_at INTEGER NOT NULL,     -- unix ms
     revision INTEGER NOT NULL,
-    sync_state INTEGER NOT NULL DEFAULT 0
+    sync_state INTEGER NOT NULL DEFAULT 0,
+    synced_hash BLOB                  -- v2: hash last sync agreed on (NULL = none)
 );
 
 CREATE TABLE tombstones (
@@ -290,16 +284,6 @@ CREATE TABLE conflicts (
     resolved INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE sync_queue (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    operation INTEGER NOT NULL,       -- 0=create, 1=update, 2=delete
-    relative_path TEXT NOT NULL,
-    content_hash BLOB,
-    revision INTEGER NOT NULL,
-    created_at INTEGER NOT NULL,
-    retries INTEGER NOT NULL DEFAULT 0
-);
-
 CREATE TABLE device_identity (
     device_id TEXT PRIMARY KEY,
     public_key BLOB NOT NULL,
@@ -314,6 +298,9 @@ CREATE TABLE config (
 );
 ```
 
+Schema is created in `core/src/index/store.rs::migrate()`; the `synced_hash`
+column is added via `ALTER TABLE` when upgrading a pre-v2 database.
+
 ---
 
 ## Key Design Decisions
@@ -321,44 +308,34 @@ CREATE TABLE config (
 | Decision | Choice | Rationale |
 |---|---|---|
 | Sync engine language | Rust | Performance, safety, cross-platform, small binary |
-| Desktop framework | Tauri + React | Small binary, Rust core, acceptable UI |
+| Desktop framework | Tauri v2 (webview over httpd) | Small binary, Rust core, no build step for the UI |
 | Mobile framework | Android native/Kotlin | First-class Android APIs, SAF, background services |
 | Hash algorithm | BLAKE3 | Fastest cryptographic hash, streaming support |
 | Metadata storage | SQLite | Embedded, reliable, well-understood |
-| Peer discovery | mDNS (libmdns/zeroconf) | Zero-config, LAN-only, widely supported |
-| Transport encryption | Noise Protocol | Modern, audited, minimal dependencies |
-| Wire protocol | Simple binary (protobuf or custom) | Compact, versioned, language-agnostic |
-| Conflict strategy | Version preservation | Safe default, no data loss |
+| Peer discovery | None (static host/port from QR) | The phone scans the desktop's QR; no LAN discovery needed |
+| Transport encryption | X25519 + AES-256-GCM | Minimal, audited primitives; hand-rolled sync protocol |
+| Wire protocol | bincode over TCP | Compact, versioned, language-agnostic |
+| Conflict strategy | Version preservation + synced_hash | Safe default, no data loss, no false conflicts |
+| File-change detection | Vault re-scan on sync | No watcher dependency; simple and correct |
 
 ---
 
 ## Error Handling Strategy
 
 ```rust
-#[derive(Debug, thiserror::Error)]
+// NetworkError is hand-rolled (no thiserror dependency):
+//   - Connection, Protocol, Encryption, Timeout, Io
+//   - impl std::error::Error + Display, with From<std::io::Error>
+
+#[derive(Debug, Clone)]
 pub enum SyncError {
-    #[error("network error: {0}")]
-    Network(#[from] NetworkError),
-
-    #[error("authentication failed: {0}")]
+    Network(NetworkError),
     Authentication(String),
-
-    #[error("permission denied: {0}")]
     Permission(String),
-
-    #[error("filesystem error: {0}")]
-    Filesystem(#[from] std::io::Error),
-
-    #[error("integrity check failed for {path}: expected {expected}, got {actual}")]
+    Filesystem(std::io::Error),
     Integrity { path: PathBuf, expected: String, actual: String },
-
-    #[error("conflict: {0}")]
     Conflict(String),
-
-    #[error("protocol error: {0}")]
     Protocol(String),
-
-    #[error("{0}")]
     Other(String),
 }
 ```
@@ -369,11 +346,11 @@ pub enum SyncError {
 
 | Metric | Target | Method |
 |---|---|---|
-| Idle CPU | <0.5% | Event-driven watcher, no polling |
+| Idle CPU | <0.5% | No watcher; only a slow status ticker and SSE broadcast |
 | Idle RAM (desktop core) | <30 MB | Minimal allocations, no file cache |
 | Metadata DB (10K files) | <5 MB | Compact schema, no content storage |
 | Initial index (10K files) | <30 s | Parallel walk + BLAKE3 streaming |
-| Change detection latency | <2 s | Native FS events + debounce |
+| Change detection latency | On next sync | Vault re-scan at session start |
 | 1 MB transfer | <500 ms | Direct streaming over LAN |
 | 1 GB transfer | <2 min | Chunked streaming, bounded memory |
 | Cold start | <2 s | Minimal initialization, lazy loading |

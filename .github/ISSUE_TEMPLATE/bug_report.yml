@@ -1,0 +1,67 @@
+name: Bug report
+description: Report a crash, data-loss risk, or incorrect sync behavior
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please fill out the details below. For **security**
+        issues (data loss, unauthorized vault access) use the private
+        [Security Advisories](https://github.com/chintu79/obsync/security/advisories)
+        flow instead — do not file them publicly.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Server binary / APK version (from `git describe` or the release tag)
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - Server (httpd dashboard)
+        - Android app
+        - Sync engine (core)
+        - Protocol / pairing
+        - CLI
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What did you do, and what happened?
+      placeholder: |
+        1. Select vault at /path/to/vault
+        2. Edit note.md on both laptop and phone
+        3. Trigger sync
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include error messages, stack traces, or the activity feed from the dashboard.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Rust version, Android version, network topology (same Wi-Fi? hotspot?)
+      placeholder: |
+        - Laptop: Fedora 41
+        - Phone: Android 16 (NARZO 70 Pro)
+        - Network: phone hotspot bridging laptop
+    validations:
+      required: false

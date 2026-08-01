@@ -5,7 +5,6 @@ use tracing::{debug, info};
 use crate::filesystem::atomic::cleanup_stale_temps;
 use crate::filesystem::io::{file_size, hash_file_path, modified_time};
 use crate::filesystem::Blake3Hash;
-use crate::filesystem::watcher::WatchEvent;
 use crate::index::compare::{compare_manifests, ManifestDiff};
 use crate::index::scanner::{scan_vault, scan_vault_incremental};
 use crate::index::state::{FileState, Manifest, RevisionId, SyncState, Tombstone};
@@ -13,7 +12,6 @@ use crate::index::store::Store;
 use crate::network::peer::PeerConnection;
 use crate::storage::db;
 use crate::sync::delta::SyncOperation;
-use crate::sync::queue::{QueueEntry, SyncQueue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncStateMachine {
@@ -29,7 +27,6 @@ pub enum SyncStateMachine {
 pub struct SyncEngine {
     vault_path: PathBuf,
     store: Store,
-    queue: SyncQueue,
     state: SyncStateMachine,
     device_id: String,
     revision_counter: RevisionId,
@@ -45,7 +42,6 @@ impl SyncEngine {
         let mut engine = Self {
             vault_path,
             store,
-            queue: SyncQueue::new(),
             state: SyncStateMachine::Idle,
             device_id,
             revision_counter: 0,
@@ -152,11 +148,8 @@ impl SyncEngine {
 
         let copy = self.conflict_copy_path(path, remote_hash)?;
         self.mark_conflict(path)?;
-        self.store.record_conflict(
-            &rel_str,
-            Some(&local.content_hash),
-            Some(remote_hash),
-        )?;
+        self.store
+            .record_conflict(&rel_str, Some(&local.content_hash), Some(remote_hash))?;
         info!("Conflict on {:?} -> {}", path, copy.display());
         Ok(Some(copy))
     }
@@ -190,7 +183,10 @@ impl SyncEngine {
                 return Ok(candidate);
             }
         }
-        anyhow::bail!("could not allocate a conflict copy name for {}", path.display())
+        anyhow::bail!(
+            "could not allocate a conflict copy name for {}",
+            path.display()
+        )
     }
 
     /// Resolve an unresolved conflict by applying the chosen resolution and
@@ -237,8 +233,13 @@ impl SyncEngine {
         let size = file_size(&original)?;
         let modified = modified_time(&original)?;
         self.revision_counter += 1;
-        let mut state =
-            FileState::new(entry.relative_path.clone(), hash, size, modified, self.revision_counter);
+        let mut state = FileState::new(
+            entry.relative_path.clone(),
+            hash,
+            size,
+            modified,
+            self.revision_counter,
+        );
         if let Some(existing) = self.store.get_file_state(rel)? {
             state.synced_hash = existing.synced_hash;
         }
@@ -319,26 +320,18 @@ impl SyncEngine {
                         // synced yet, so the last-synced hash stays the old one.
                         updated.synced_hash = state.synced_hash;
                         self.store.upsert_file_state(&updated)?;
-                        self.queue.push(SyncOperation::Update {
-                            path: updated.relative_path.clone(),
-                            content_hash: updated.content_hash,
-                            size: updated.size,
-                            modified_at: updated.modified_at,
-                        });
                     }
                 }
                 None if detect_deletions => {
                     // Removed from disk → tombstone
                     self.revision_counter += 1;
-                    self.store.delete_file_state(&state.relative_path.to_string_lossy())?;
+                    self.store
+                        .delete_file_state(&state.relative_path.to_string_lossy())?;
                     self.store.upsert_tombstone(&Tombstone {
                         relative_path: state.relative_path.clone(),
                         revision: self.revision_counter,
-                        deleted_at: chrono::Utc::now().timestamp_millis(),
+                        deleted_at: crate::filesystem::now_millis(),
                     })?;
-                    self.queue.push(SyncOperation::Delete {
-                        path: state.relative_path.clone(),
-                    });
                 }
                 None => {
                     // Missing from disk but we don't trust this side's disk view:
@@ -349,137 +342,19 @@ impl SyncEngine {
 
         // New files that were never indexed
         for disk in &result.files {
-            if !existing.iter().any(|s| s.relative_path == disk.relative_path) {
+            if !existing
+                .iter()
+                .any(|s| s.relative_path == disk.relative_path)
+            {
                 self.revision_counter += 1;
                 let mut state = disk.clone();
                 state.revision = self.revision_counter;
                 self.store.upsert_file_state(&state)?;
-                self.queue.push(SyncOperation::Create {
-                    path: state.relative_path.clone(),
-                    content_hash: state.content_hash,
-                    size: state.size,
-                    modified_at: state.modified_at,
-                });
             }
         }
 
         self.save_revision_counter()?;
         self.set_state(SyncStateMachine::Idle);
-        Ok(())
-    }
-
-    /// Handle a filesystem event from the watcher.
-    pub async fn handle_event(&mut self, event: WatchEvent) -> Result<(), anyhow::Error> {
-        match event {
-            WatchEvent::Created(path) | WatchEvent::Modified(path) => {
-                self.handle_file_change(&path).await?;
-            }
-            WatchEvent::Removed(path) => {
-                self.handle_file_deletion(&path).await?;
-            }
-            WatchEvent::Renamed(from, to) => {
-                self.handle_file_rename(&from, &to).await?;
-            }
-        }
-        Ok(())
-    }
-
-    async fn handle_file_change(&mut self, path: &Path) -> Result<(), anyhow::Error> {
-        if !path.is_file() || crate::filesystem::ignore::should_ignore(path) {
-            return Ok(());
-        }
-
-        let relative = path.strip_prefix(&self.vault_path)?.to_owned();
-        let size = file_size(path)?;
-        let modified = modified_time(path)?;
-        let hash = hash_file_path(path)?;
-
-        self.revision_counter += 1;
-
-        let state = FileState::new(
-            relative.clone(),
-            hash,
-            size,
-            modified,
-            self.revision_counter,
-        );
-
-        // Check if this was previously in conflict
-        if let Some(existing) = self.store.get_file_state(&relative.to_string_lossy())? {
-            if existing.sync_state == SyncState::Conflict {
-                let mut s = state.clone();
-                s.sync_state = SyncState::Synced;
-                self.store.upsert_file_state(&s)?;
-                return Ok(());
-            }
-        }
-
-        self.store.upsert_file_state(&state)?;
-        self.save_revision_counter()?;
-
-        self.queue.push(SyncOperation::Update {
-            path: relative,
-            content_hash: hash,
-            size,
-            modified_at: modified,
-        });
-
-        Ok(())
-    }
-
-    async fn handle_file_deletion(&mut self, path: &Path) -> Result<(), anyhow::Error> {
-        let relative = path.strip_prefix(&self.vault_path)?.to_owned();
-        let rel_str = relative.to_string_lossy().to_string();
-
-        if let Some(_state) = self.store.get_file_state(&rel_str)? {
-            self.revision_counter += 1;
-            self.store.delete_file_state(&rel_str)?;
-
-            self.store.upsert_tombstone(&Tombstone {
-                relative_path: relative.clone(),
-                revision: self.revision_counter,
-                deleted_at: chrono::Utc::now().timestamp_millis(),
-            })?;
-
-            self.queue.push(SyncOperation::Delete { path: relative });
-            self.save_revision_counter()?;
-        }
-
-        Ok(())
-    }
-
-    async fn handle_file_rename(
-        &mut self,
-        from: &Path,
-        to: &Path,
-    ) -> Result<(), anyhow::Error> {
-        let relative_from = from.strip_prefix(&self.vault_path)?.to_owned();
-        let relative_to = to.strip_prefix(&self.vault_path)?.to_owned();
-
-        if let Some(state) = self.store.get_file_state(&relative_from.to_string_lossy())? {
-            // If content hasn't changed, it's a rename
-            if to.is_file() {
-                let to_hash = hash_file_path(to)?;
-                if to_hash == state.content_hash {
-                    self.store.delete_file_state(&relative_from.to_string_lossy())?;
-                    let mut new_state = state.clone();
-                    new_state.relative_path = relative_to.clone();
-                    self.store.upsert_file_state(&new_state)?;
-
-                    self.queue.push(SyncOperation::Rename {
-                        from: relative_from,
-                        to: relative_to,
-                        content_hash: state.content_hash,
-                    });
-                    return Ok(());
-                }
-            }
-        }
-
-        // Treat as delete + create
-        self.handle_file_deletion(from).await?;
-        self.handle_file_change(to).await?;
-
         Ok(())
     }
 
@@ -503,11 +378,7 @@ impl SyncEngine {
         for (local_file, _remote_file) in &diff.conflicts {
             let rel_str = local_file.relative_path.to_string_lossy().to_string();
             // Update local state to Conflict
-            if let Some(mut existing) = self
-                .store
-                .get_file_state(&rel_str)
-                .unwrap_or(None)
-            {
+            if let Some(mut existing) = self.store.get_file_state(&rel_str).unwrap_or(None) {
                 existing.sync_state = SyncState::Conflict;
                 let _ = self.store.upsert_file_state(&existing);
             }
@@ -566,7 +437,8 @@ impl SyncEngine {
             let size = file_size(&full_path)?;
             let modified = modified_time(&full_path)?;
             self.revision_counter += 1;
-            let state = FileState::new(path.to_owned(), hash, size, modified, self.revision_counter);
+            let state =
+                FileState::new(path.to_owned(), hash, size, modified, self.revision_counter);
             self.store.upsert_file_state(&state)?;
         }
 
@@ -589,13 +461,22 @@ impl SyncEngine {
                 && existing.synced_hash.is_some()
                 && existing.synced_hash != Some(existing.content_hash)
             {
-                info!("Ignoring update for {} (local edits not yet synced)", rel_str);
+                info!(
+                    "Ignoring update for {} (local edits not yet synced)",
+                    rel_str
+                );
                 return Ok(()); // Surface conflict to UI
             }
         }
 
         self.revision_counter += 1;
-        let mut state = FileState::new(path.to_owned(), *content_hash, size, modified_at, self.revision_counter);
+        let mut state = FileState::new(
+            path.to_owned(),
+            *content_hash,
+            size,
+            modified_at,
+            self.revision_counter,
+        );
         state.synced_hash = Some(*content_hash);
         self.store.upsert_file_state(&state)?;
         self.save_revision_counter()?;
@@ -617,7 +498,7 @@ impl SyncEngine {
         self.store.upsert_tombstone(&Tombstone {
             relative_path: path.to_owned(),
             revision: self.revision_counter,
-            deleted_at: chrono::Utc::now().timestamp_millis(),
+            deleted_at: crate::filesystem::now_millis(),
         })?;
 
         Ok(())
@@ -646,28 +527,6 @@ impl SyncEngine {
         }
 
         Ok(())
-    }
-
-    /// Process queued operations (priority: small files first).
-    pub fn process_queue(&mut self) -> Vec<QueueEntry> {
-        self.queue.prioritize_small_files();
-        let mut batch = Vec::new();
-        while let Some(entry) = self.queue.pop_front() {
-            batch.push(entry);
-            if batch.len() >= 10 {
-                break;
-            }
-        }
-        batch
-    }
-
-    /// Queue is non-empty.
-    pub fn has_pending(&self) -> bool {
-        !self.queue.is_empty()
-    }
-
-    pub fn queue_len(&self) -> usize {
-        self.queue.len()
     }
 
     /// Store stats
@@ -739,7 +598,7 @@ mod tests {
             .build_manifest()
             .files
             .iter()
-            .find(|f| f.relative_path == PathBuf::from("keep.md"))
+            .find(|f| f.relative_path == *"keep.md")
             .unwrap()
             .revision;
 
@@ -752,15 +611,21 @@ mod tests {
 
         let manifest = engine.build_manifest();
         assert_eq!(manifest.files.len(), 2);
-        assert!(manifest.files.iter().any(|f| f.relative_path == PathBuf::from("new.md")));
-        assert!(manifest.files.iter().any(|f| f.relative_path == PathBuf::from("change.md")));
+        assert!(manifest.files.iter().any(|f| f.relative_path == *"new.md"));
+        assert!(manifest
+            .files
+            .iter()
+            .any(|f| f.relative_path == *"change.md"));
         // Deleted file became a tombstone
-        assert!(manifest.tombstones.iter().any(|t| t.relative_path == PathBuf::from("keep.md")));
+        assert!(manifest
+            .tombstones
+            .iter()
+            .any(|t| t.relative_path == *"keep.md"));
         // Unchanged file keeps its revision → no spurious conflicts
         let keep_revision = manifest
             .files
             .iter()
-            .find(|f| f.relative_path == PathBuf::from("change.md"))
+            .find(|f| f.relative_path == *"change.md")
             .unwrap()
             .revision;
         assert!(keep_revision > original_revision);
@@ -779,7 +644,7 @@ mod tests {
             .build_manifest()
             .files
             .iter()
-            .find(|f| f.relative_path == PathBuf::from("stable.md"))
+            .find(|f| f.relative_path == *"stable.md")
             .unwrap()
             .revision;
 
@@ -788,7 +653,7 @@ mod tests {
             .build_manifest()
             .files
             .iter()
-            .find(|f| f.relative_path == PathBuf::from("stable.md"))
+            .find(|f| f.relative_path == *"stable.md")
             .unwrap()
             .revision;
         assert_eq!(rev_before, rev_after);
@@ -816,7 +681,6 @@ mod tests {
         let manifest = engine.build_manifest();
         assert_eq!(manifest.files.len(), 1);
         assert!(manifest.tombstones.is_empty());
-        assert!(!engine.has_pending());
         assert_eq!(engine.file_count(), 1);
     }
 
@@ -838,46 +702,10 @@ mod tests {
         let manifest = engine.build_manifest();
         assert!(manifest.files.is_empty());
         assert_eq!(manifest.tombstones.len(), 1);
-        assert_eq!(manifest.tombstones[0].relative_path, PathBuf::from("gone.md"));
-    }
-
-    #[tokio::test]
-    async fn test_handle_create_event() {
-        let dir = TempDir::new().unwrap();
-        let mut engine = SyncEngine::new(dir.path().to_owned(), "test-device".into())
-            .await
-            .unwrap();
-        engine.initial_index().await.unwrap();
-
-        let file_path = dir.path().join("new.md");
-        std::fs::write(&file_path, b"new file").unwrap();
-
-        engine
-            .handle_event(WatchEvent::Created(file_path))
-            .await
-            .unwrap();
-        assert_eq!(engine.file_count(), 1);
-        assert!(engine.has_pending());
-    }
-
-    #[tokio::test]
-    async fn test_handle_delete_event() {
-        let dir = TempDir::new().unwrap();
-        let file_path = dir.path().join("delete.md");
-        std::fs::write(&file_path, b"delete me").unwrap();
-
-        let mut engine = SyncEngine::new(dir.path().to_owned(), "test-device".into())
-            .await
-            .unwrap();
-        engine.initial_index().await.unwrap();
-        assert_eq!(engine.file_count(), 1);
-
-        std::fs::remove_file(&file_path).unwrap();
-        engine
-            .handle_event(WatchEvent::Removed(file_path))
-            .await
-            .unwrap();
-        assert_eq!(engine.file_count(), 0);
+        assert_eq!(
+            manifest.tombstones[0].relative_path,
+            PathBuf::from("gone.md")
+        );
     }
 
     #[tokio::test]
@@ -893,7 +721,10 @@ mod tests {
         let manifest = engine.build_manifest();
         assert_eq!(manifest.device_id, "test-desk");
         assert_eq!(manifest.files.len(), 1);
-        assert_eq!(manifest.files[0].relative_path, PathBuf::from("manifest.md"));
+        assert_eq!(
+            manifest.files[0].relative_path,
+            PathBuf::from("manifest.md")
+        );
     }
 
     #[tokio::test]
@@ -937,29 +768,5 @@ mod tests {
         assert_eq!(engine.state(), SyncStateMachine::Syncing);
         engine.set_state(SyncStateMachine::Idle);
         assert_eq!(engine.state(), SyncStateMachine::Idle);
-    }
-
-    #[tokio::test]
-    async fn test_process_queue_prioritizes_small() {
-        let (mut engine, _dir) = setup_engine().await;
-        engine.queue.push(SyncOperation::Create {
-            path: "large.bin".into(),
-            content_hash: [0u8; 32],
-            size: 100_000_000,
-            modified_at: 1,
-        });
-        engine.queue.push(SyncOperation::Create {
-            path: "small.md".into(),
-            content_hash: [0u8; 32],
-            size: 100,
-            modified_at: 1,
-        });
-
-        let batch = engine.process_queue();
-        assert_eq!(batch.len(), 2);
-        match &batch[0].operation {
-            SyncOperation::Create { size, .. } => assert_eq!(*size, 100),
-            _ => panic!("expected small file first"),
-        }
     }
 }

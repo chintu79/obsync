@@ -28,8 +28,8 @@ pub fn modified_time(path: &Path) -> io::Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
     use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_hash_file_consistency() {

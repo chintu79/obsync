@@ -30,7 +30,7 @@ pub fn resolve_divergence(local: &FileState, remote: &FileState) -> SideOutcome 
     let remote_unchanged = remote.synced_hash == Some(remote.content_hash);
     match (local_unchanged, remote_unchanged) {
         (true, _) => SideOutcome::RemoteWins, // local never changed since agreement → take remote
-        (_, true) => SideOutcome::LocalWins, // remote never changed since agreement → push local
+        (_, true) => SideOutcome::LocalWins,  // remote never changed since agreement → push local
         (false, false) => {
             if local.synced_hash.is_some() && remote.synced_hash.is_some() {
                 SideOutcome::Conflict

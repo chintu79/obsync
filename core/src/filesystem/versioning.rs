@@ -1,11 +1,12 @@
 //! Version snapshots: keep a copy of every file before it is overwritten,
 //! stored under `.obsync/versions/<relative path>/<epoch millis>`.
 
+use std::cmp::Reverse;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use crate::filesystem::now_millis;
 
 /// Maximum snapshots kept per file.
 const MAX_PER_FILE: usize = 32;
@@ -34,7 +35,7 @@ pub fn snapshot_before_overwrite(vault: &Path, rel: &Path) -> io::Result<()> {
     }
     let dir = snapshot_dir(vault, rel);
     fs::create_dir_all(&dir)?;
-    let stamp = Utc::now().timestamp_millis();
+    let stamp = now_millis();
     let mut dest = dir.join(stamp.to_string());
     if dest.exists() {
         let mut i = 1;
@@ -73,13 +74,11 @@ pub fn list_snapshots(vault: &Path, rel: &Path) -> io::Result<Vec<SnapshotInfo>>
         if !path.is_file() {
             continue;
         }
-        let timestamp = path
-            .file_name()
-            .and_then(|n| {
-                let name = n.to_string_lossy();
-                let millis = name.split('-').next().unwrap_or(&name);
-                millis.parse::<i64>().ok()
-            });
+        let timestamp = path.file_name().and_then(|n| {
+            let name = n.to_string_lossy();
+            let millis = name.split('-').next().unwrap_or(&name);
+            millis.parse::<i64>().ok()
+        });
         let Some(timestamp) = timestamp else {
             continue;
         };
@@ -90,7 +89,7 @@ pub fn list_snapshots(vault: &Path, rel: &Path) -> io::Result<Vec<SnapshotInfo>>
             size,
         });
     }
-    out.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    out.sort_by_key(|a| Reverse(a.timestamp));
     Ok(out)
 }
 
@@ -124,7 +123,7 @@ pub fn list_all_snapshots(vault: &Path) -> io::Result<Vec<SnapshotInfo>> {
         Ok(())
     }
     walk(&root, Path::new(""), &mut out)?;
-    out.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    out.sort_by_key(|a| Reverse(a.timestamp));
     Ok(out)
 }
 

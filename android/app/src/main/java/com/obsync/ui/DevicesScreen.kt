@@ -11,7 +11,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -72,7 +71,11 @@ fun DevicesScreen(vm: SyncViewModel, nav: NavController) {
                 state.pairedDevices.forEach { d ->
                     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
                         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.size(10.dp).clip(CircleShape).background(if (d.connected) Color(0xFF16A34A) else Color(0xFF737373)))
+                            Box(
+                                Modifier.size(10.dp).clip(CircleShape).background(
+                                    if (d.connected) LocalStatusColors.current.idle else LocalStatusColors.current.offline
+                                )
+                            )
                             Spacer(Modifier.width(12.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(d.deviceName, fontWeight = FontWeight.Medium)

@@ -1,27 +1,10 @@
 use std::path::Path;
 
-const IGNORED_PREFIXES: &[&str] = &[
-    ".~",
-    "~$",
-    ".",
-];
+const IGNORED_PREFIXES: &[&str] = &[".~", "~$", "."];
 
-const IGNORED_SUFFIXES: &[&str] = &[
-    ".swp",
-    ".swx",
-    ".tmp",
-    ".temp",
-    ".bak",
-    ".sync-temp",
-    "~",
-];
+const IGNORED_SUFFIXES: &[&str] = &[".swp", ".swx", ".tmp", ".temp", ".bak", ".sync-temp", "~"];
 
-const IGNORED_NAMES: &[&str] = &[
-    ".DS_Store",
-    "Thumbs.db",
-    "thumbs.db",
-    ".directory",
-];
+const IGNORED_NAMES: &[&str] = &[".DS_Store", "Thumbs.db", "thumbs.db", ".directory"];
 
 pub fn should_ignore(path: &Path) -> bool {
     let name = match path.file_name() {
@@ -43,9 +26,9 @@ pub fn should_ignore(path: &Path) -> bool {
 
     if name.starts_with('.') && name.len() > 1 {
         // Ignore dotfiles except .obsidian/
-        let is_obsidian = path.components().any(|c| {
-            c.as_os_str().to_string_lossy().as_ref() == ".obsidian"
-        });
+        let is_obsidian = path
+            .components()
+            .any(|c| c.as_os_str().to_string_lossy().as_ref() == ".obsidian");
         if !is_obsidian {
             // Still allow specific hidden files in .obsidian
             return true;
@@ -68,7 +51,9 @@ mod tests {
     #[test]
     fn test_not_ignore_obsidian_dir() {
         assert!(!should_ignore(&PathBuf::from(".obsidian/config")));
-        assert!(!should_ignore(&PathBuf::from(".obsidian/plugins/plugin/main.js")));
+        assert!(!should_ignore(&PathBuf::from(
+            ".obsidian/plugins/plugin/main.js"
+        )));
     }
 
     #[test]

@@ -1,12 +1,11 @@
 use rand::rngs::OsRng;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey, StaticSecret};
 
+use crate::filesystem::now_millis;
 use crate::storage::config::ConfigStore;
-
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine;
 
 #[derive(Clone)]
 pub struct DeviceIdentity {
@@ -38,18 +37,33 @@ struct DeviceIdentityData {
     created_at: i64,
 }
 
+fn new_device_id() -> String {
+    let mut bytes = [0u8; 16];
+    OsRng.fill_bytes(&mut bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant
+    format!(
+        "{}-{}-{}-{}-{}",
+        hex::encode(&bytes[0..4]),
+        hex::encode(&bytes[4..6]),
+        hex::encode(&bytes[6..8]),
+        hex::encode(&bytes[8..10]),
+        hex::encode(&bytes[10..16]),
+    )
+}
+
 impl DeviceIdentity {
     pub fn generate(device_name: String) -> Self {
-        let mut rng = OsRng;
-        let private_key = StaticSecret::random_from_rng(&mut rng);
+        let rng = OsRng;
+        let private_key = StaticSecret::random_from_rng(rng);
         let public_key = PublicKey::from(&private_key);
 
         Self {
-            device_id: uuid::Uuid::new_v4().to_string(),
+            device_id: new_device_id(),
             device_name,
             private_key,
             public_key,
-            created_at: chrono::Utc::now().timestamp_millis(),
+            created_at: now_millis(),
         }
     }
 
@@ -68,14 +82,14 @@ impl DeviceIdentity {
             created_at: self.created_at,
         };
         let bytes = bincode::serialize(&data)?;
-        let encoded = BASE64.encode(&bytes);
+        let encoded = hex::encode(&bytes);
         store.set("device_identity", &encoded)?;
         Ok(())
     }
 
     pub fn load(store: &ConfigStore) -> Result<Option<Self>, anyhow::Error> {
         if let Some(encoded) = store.get("device_identity")? {
-            let bytes = BASE64.decode(&encoded)?;
+            let bytes = hex::decode(&encoded)?;
             let data: DeviceIdentityData = bincode::deserialize(&bytes)?;
             let mut pk_arr = [0u8; 32];
             pk_arr.copy_from_slice(&data.private_key_bytes);

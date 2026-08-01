@@ -6,9 +6,7 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tracing::info;
 
-use crate::network::protocol::{
-    HelloPayload, MessageType, ProtocolMessage, PROTOCOL_VERSION,
-};
+use crate::network::protocol::{HelloPayload, MessageType, ProtocolMessage, PROTOCOL_VERSION};
 
 pub struct PeerConnection {
     pub device_id: String,
@@ -45,10 +43,7 @@ impl PeerConnection {
         Ok(connection)
     }
 
-    async fn handshake(
-        &mut self,
-        fingerprint: &str,
-    ) -> Result<(), crate::network::NetworkError> {
+    async fn handshake(&mut self, fingerprint: &str) -> Result<(), crate::network::NetworkError> {
         let hello = HelloPayload {
             device_id: self.device_id.clone(),
             device_name: self.device_name.clone(),
@@ -104,15 +99,14 @@ impl PeerConnection {
         Ok(())
     }
 
-    pub async fn receive_message(
-        &self,
-    ) -> Result<ProtocolMessage, crate::network::NetworkError> {
+    pub async fn receive_message(&self) -> Result<ProtocolMessage, crate::network::NetworkError> {
         let mut stream = self.stream.lock().await;
         use tokio::io::AsyncReadExt;
 
-        let len = stream.read_u32_le().await.map_err(|_| {
-            crate::network::NetworkError::Connection("connection closed".into())
-        })?;
+        let len = stream
+            .read_u32_le()
+            .await
+            .map_err(|_| crate::network::NetworkError::Connection("connection closed".into()))?;
 
         let mut buf = vec![0u8; len as usize];
         stream.read_exact(&mut buf).await?;

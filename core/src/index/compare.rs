@@ -11,19 +11,22 @@ pub struct ManifestDiff {
     pub remote_revision_counter: RevisionId,
 }
 
-pub fn compare_manifests(
-    local: &Manifest,
-    remote: &Manifest,
-) -> ManifestDiff {
+pub fn compare_manifests(local: &Manifest, remote: &Manifest) -> ManifestDiff {
     let local_map: HashMap<&PathBuf, &FileState> =
         local.files.iter().map(|f| (&f.relative_path, f)).collect();
     let remote_map: HashMap<&PathBuf, &FileState> =
         remote.files.iter().map(|f| (&f.relative_path, f)).collect();
 
-    let local_tombstones: HashMap<&PathBuf, &Tombstone> =
-        local.tombstones.iter().map(|t| (&t.relative_path, t)).collect();
-    let remote_tombstones: HashMap<&PathBuf, &Tombstone> =
-        remote.tombstones.iter().map(|t| (&t.relative_path, t)).collect();
+    let local_tombstones: HashMap<&PathBuf, &Tombstone> = local
+        .tombstones
+        .iter()
+        .map(|t| (&t.relative_path, t))
+        .collect();
+    let remote_tombstones: HashMap<&PathBuf, &Tombstone> = remote
+        .tombstones
+        .iter()
+        .map(|t| (&t.relative_path, t))
+        .collect();
 
     let mut operations = Vec::new();
     let mut conflicts = Vec::new();
@@ -82,14 +85,14 @@ pub fn compare_manifests(
     }
 
     // Tombstone handling: deleted on one side
-    for (path, _local_file) in &local_map {
+    for path in local_map.keys() {
         if remote_tombstones.contains_key(path) {
             operations.push(SyncOperation::Delete {
                 path: (*path).clone(),
             });
         }
     }
-    for (path, _remote_file) in &remote_map {
+    for path in remote_map.keys() {
         if local_tombstones.contains_key(path) {
             operations.push(SyncOperation::Delete {
                 path: (*path).clone(),
@@ -181,7 +184,10 @@ mod tests {
             revision_counter: 2,
         };
         let diff = compare_manifests(&local, &remote);
-        assert!(diff.operations.iter().any(|op| matches!(op, SyncOperation::Delete { .. })));
+        assert!(diff
+            .operations
+            .iter()
+            .any(|op| matches!(op, SyncOperation::Delete { .. })));
     }
 
     #[test]

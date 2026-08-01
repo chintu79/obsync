@@ -282,9 +282,18 @@ pub extern "system" fn Java_com_obsync_bridge_RustBridge_syncOnce<'local>(
     let id_json: String = env.get_string(&identity_json).unwrap().into();
 
     let identity_val: serde_json::Value = serde_json::from_str(&id_json).unwrap_or_default();
-    let device_id = identity_val["device_id"].as_str().unwrap_or("android").to_string();
-    let device_name = identity_val["device_name"].as_str().unwrap_or("Android").to_string();
-    let fingerprint = identity_val["fingerprint"].as_str().unwrap_or("").to_string();
+    let device_id = identity_val["device_id"]
+        .as_str()
+        .unwrap_or("android")
+        .to_string();
+    let device_name = identity_val["device_name"]
+        .as_str()
+        .unwrap_or("Android")
+        .to_string();
+    let fingerprint = identity_val["fingerprint"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
 
     let vault_path = std::path::PathBuf::from(&vault_str);
     let addr_parsed = format!("{}:{}", addr_str, port);
@@ -292,8 +301,9 @@ pub extern "system" fn Java_com_obsync_bridge_RustBridge_syncOnce<'local>(
     let result = tokio::runtime::Runtime::new().unwrap().block_on(async {
         use std::str::FromStr;
         let socket = std::net::SocketAddr::from_str(&addr_parsed)?;
-        let peer = PeerConnection::connect(socket, device_id.clone(), device_name.clone(), fingerprint)
-            .await?;
+        let peer =
+            PeerConnection::connect(socket, device_id.clone(), device_name.clone(), fingerprint)
+                .await?;
 
         let mut engine = SyncEngine::new(vault_path, device_id.clone()).await?;
         engine.refresh_index(false).await?;
@@ -325,7 +335,10 @@ pub extern "system" fn Java_com_obsync_bridge_RustBridge_listConflicts<'local>(
     let vault_str: String = env.get_string(&vault_path).unwrap().into();
     let id_json: String = env.get_string(&identity_json).unwrap().into();
     let identity_val: serde_json::Value = serde_json::from_str(&id_json).unwrap_or_default();
-    let device_id = identity_val["device_id"].as_str().unwrap_or("android").to_string();
+    let device_id = identity_val["device_id"]
+        .as_str()
+        .unwrap_or("android")
+        .to_string();
 
     let vault_path = std::path::PathBuf::from(&vault_str);
     let result = tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -366,7 +379,10 @@ pub extern "system" fn Java_com_obsync_bridge_RustBridge_resolveConflict<'local>
     let rel: String = env.get_string(&relative_path).unwrap().into();
     let res: String = env.get_string(&resolution).unwrap().into();
     let identity_val: serde_json::Value = serde_json::from_str(&id_json).unwrap_or_default();
-    let device_id = identity_val["device_id"].as_str().unwrap_or("android").to_string();
+    let device_id = identity_val["device_id"]
+        .as_str()
+        .unwrap_or("android")
+        .to_string();
 
     let resolution = match res.as_str() {
         "KeepLocal" => crate::conflict::resolution::Resolution::KeepLocal,
@@ -437,7 +453,10 @@ pub extern "system" fn Java_com_obsync_bridge_RustBridge_restoreSnapshot<'local>
     let id_json: String = env.get_string(&identity_json).unwrap().into();
     let rel: String = env.get_string(&relative_path).unwrap().into();
     let identity_val: serde_json::Value = serde_json::from_str(&id_json).unwrap_or_default();
-    let device_id = identity_val["device_id"].as_str().unwrap_or("android").to_string();
+    let device_id = identity_val["device_id"]
+        .as_str()
+        .unwrap_or("android")
+        .to_string();
 
     let vault_path = std::path::PathBuf::from(&vault_str);
     let result = tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -467,7 +486,9 @@ pub extern "system" fn Java_com_obsync_bridge_RustBridge_connectPeer(
     _port: jint,
     _identity_json: JString,
 ) -> jstring {
-    env.new_string("{\"error\":\"not implemented\"}").unwrap().into_raw()
+    env.new_string("{\"error\":\"not implemented\"}")
+        .unwrap()
+        .into_raw()
 }
 
 #[no_mangle]
@@ -477,7 +498,9 @@ pub extern "system" fn Java_com_obsync_bridge_RustBridge_sendMessage(
     _conn_json: JString,
     _msg_json: JString,
 ) -> jstring {
-    env.new_string("{\"error\":\"not implemented\"}").unwrap().into_raw()
+    env.new_string("{\"error\":\"not implemented\"}")
+        .unwrap()
+        .into_raw()
 }
 
 #[no_mangle]
@@ -486,5 +509,7 @@ pub extern "system" fn Java_com_obsync_bridge_RustBridge_receiveMessage(
     _class: JClass,
     _conn_json: JString,
 ) -> jstring {
-    env.new_string("{\"error\":\"not implemented\"}").unwrap().into_raw()
+    env.new_string("{\"error\":\"not implemented\"}")
+        .unwrap()
+        .into_raw()
 }

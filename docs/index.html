@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Obsync — Free P2P sync for Obsidian</title>
+<meta name="description" content="Sync your Obsidian vault between laptop and phone. No cloud, no account, no subscription.">
+<style>
+  :root {
+    --bg: #1e1e2e; --panel: #27273a; --text: #cdd6f4; --muted: #a6adc8;
+    --accent: #7289da; --accent-2: #cba6f7; --good: #a6e3a1; --border: #313244;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 48px 24px 80px; }
+  header { text-align: center; margin-bottom: 48px; }
+  h1 { font-size: 2.6rem; margin: 0 0 8px; letter-spacing: -0.02em; }
+  .tag { font-size: 1.15rem; color: var(--muted); margin-bottom: 24px; }
+  .badges { margin-bottom: 32px; }
+  .badges img { height: 20px; }
+  .cta-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 14px 28px; border-radius: 10px;
+    text-decoration: none; font-weight: 600; font-size: 1rem;
+    background: var(--accent); color: #fff; transition: transform .1s, box-shadow .1s;
+  }
+  .btn:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(114,137,218,.35); }
+  .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  h2 { font-size: 1.4rem; margin: 48px 0 16px; color: var(--accent-2); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 20px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .card h3 { margin: 0; font-size: 1.05rem; }
+  .card p { margin: 0; color: var(--muted); font-size: .95rem; }
+  .steps { counter-reset: step; display: grid; gap: 12px; }
+  .step {
+    display: flex; gap: 16px; align-items: flex-start;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px;
+  }
+  .step::before {
+    counter-increment: step; content: counter(step);
+    flex: 0 0 32px; height: 32px; border-radius: 50%;
+    background: var(--accent); color: #fff; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .step b { color: var(--text); }
+  code {
+    background: #181825; padding: 2px 6px; border-radius: 5px;
+    font-size: .9em; font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+  }
+  .faq p { color: var(--muted); }
+  footer { text-align: center; color: var(--muted); margin-top: 64px; font-size: .9rem; }
+  footer a { color: var(--accent-2); }
+  .note { color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Obsync</h1>
+  <div class="tag">Free, local-first P2P sync for your Obsidian vault. No cloud. No account. No subscription.</div>
+  <div class="badges">
+    <img alt="MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue">
+    <img alt="CI" src="https://github.com/chintu79/obsync/workflows/CI/badge.svg">
+  </div>
+  <div class="cta-row">
+    <a class="btn" href="#download">Download</a>
+    <a class="btn ghost" href="https://github.com/chintu79/obsync">View source on GitHub</a>
+  </div>
+</header>
+
+<h2>Why Obsync?</h2>
+<p>
+  Obsidian Sync costs $4/month and routes your notes through a third-party
+  cloud. Obsync keeps your vault on your own devices — your laptop and your
+  phone talk directly over your network, encrypted, with no account and no
+  subscription. It's free forever, and you can self-host it anywhere.
+</p>
+
+<div class="grid">
+  <div class="card"><h3>No cloud</h3><p>Devices sync directly over your home Wi-Fi or hotspot.</p></div>
+  <div class="card"><h3>Private</h3><p>Your notes never leave your devices. Pairing is fingerprint-verified.</p></div>
+  <div class="card"><h3>Free forever</h3><p>Open source under MIT / Apache-2.0. No paywall, ever.</p></div>
+  <div class="card"><h3>Safe</h3><p>Conflicts are flagged, not clobbered. Snapshots let you roll back.</p></div>
+</div>
+
+<h2>How it works</h2>
+<div class="steps">
+  <div class="step"><div><b>Install the app on your laptop.</b><br>Run the installer — it starts Obsync automatically and opens the dashboard.</div></div>
+  <div class="step"><div><b>Install the app on your phone.</b><br>Download the APK and open it.</div></div>
+  <div class="step"><div><b>Scan the QR code.</b><br>Your phone scans the code shown on the laptop's dashboard.</div></div>
+  <div class="step"><div><b>Approve and done.</b><br>Tap approve on the laptop. Your vaults stay in sync automatically.</div></div>
+</div>
+
+<h2 id="download">Download</h2>
+<div class="grid">
+  <div class="card">
+    <h3>Windows</h3>
+    <p>Installer — double-click to install.</p>
+    <a class="btn" href="https://github.com/chintu79/obsync/releases/latest">Get for Windows</a>
+  </div>
+  <div class="card">
+    <h3>macOS</h3>
+    <p>Disk image — drag to Applications.</p>
+    <a class="btn" href="https://github.com/chintu79/obsync/releases/latest">Get for macOS</a>
+  </div>
+  <div class="card">
+    <h3>Linux</h3>
+    <p>AppImage / .deb installer.</p>
+    <a class="btn" href="https://github.com/chintu79/obsync/releases/latest">Get for Linux</a>
+  </div>
+  <div class="card">
+    <h3>Android</h3>
+    <p>APK — install directly on your phone.</p>
+    <a class="btn" href="https://github.com/chintu79/obsync/releases/latest">Get APK</a>
+  </div>
+</div>
+<p class="note">
+  Everything is attached to the <a href="https://github.com/chintu79/obsync/releases/latest">latest release</a>.
+  On Android, allow "Install unknown apps" when prompted. On macOS, right-click the app and choose
+  <b>Open</b> the first time (the app is free and unsigned).
+</p>
+
+<h2>FAQ</h2>
+<div class="faq">
+  <p><b>Does this need a server or subscription?</b> No. Everything runs on your own devices, on your own network.</p>
+  <p><b>Is my data sent anywhere?</b> No. Your notes only travel between your laptop and your phone, encrypted.</p>
+  <p><b>What if I edit the same note on both devices?</b> Obsync flags it as a conflict and lets you choose which version to keep.</p>
+  <p><b>Can I sync more than a laptop + phone?</b> The server can run on a NAS or Raspberry Pi to serve many devices.</p>
+</div>
+
+<footer>
+  Built with <a href="https://github.com/chintu79/obsync">open source</a> in Rust · MIT / Apache-2.0 · Powered by the community.
+</footer>
+
+</div>
+</body>
+</html>

@@ -9,21 +9,14 @@ pub enum MessageType {
     HelloAck,
     // Sync
     Manifest,
-    ManifestAck,
     FileRequest,
     FileChunk,
-    FileComplete,
     // Operations
     SyncOperation,
     OperationAck,
-    // Conflict
-    ConflictNotification,
-    ConflictResolved,
     // Control
     Ping,
-    Pong,
     Disconnect,
-    Error,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,31 +79,13 @@ pub struct SyncOperationPayload {
     pub modified_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ManifestPayload {
-    pub device_id: String,
-    pub revision_counter: u64,
-    pub file_count: u32,
-    pub data: Vec<u8>, // compressed manifest
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ErrorPayload {
-    pub code: u32,
-    pub message: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_message_roundtrip() {
-        let msg = ProtocolMessage::new(
-            MessageType::Ping,
-            1,
-            vec![],
-        );
+        let msg = ProtocolMessage::new(MessageType::Ping, 1, vec![]);
         let bytes = msg.to_bytes().unwrap();
         let decoded = ProtocolMessage::from_bytes(&bytes).unwrap();
         assert_eq!(decoded.version, PROTOCOL_VERSION);

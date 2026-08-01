@@ -4,24 +4,11 @@
   "version": "0.1.0",
   "identifier": "com.obsync.app",
   "build": {
-    "frontendDist": "../dist",
-    "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "frontendDist": "../dist"
   },
   "app": {
     "title": "Obsync",
-    "windows": [
-      {
-        "title": "Obsync",
-        "width": 900,
-        "height": 700,
-        "resizable": true,
-        "fullscreen": false,
-        "minWidth": 700,
-        "minHeight": 500
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }
@@ -35,6 +22,8 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "category": "Productivity",
+    "shortDescription": "Local-first P2P sync for your Obsidian vault"
   }
 }

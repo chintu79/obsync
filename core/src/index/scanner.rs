@@ -42,16 +42,17 @@ pub async fn scan_vault_incremental(
             if path.is_dir() {
                 dirs_to_scan.push(path);
             } else if path.is_file() {
-                let relative = path
-                    .strip_prefix(&vault)
-                    .unwrap_or(&path)
-                    .to_owned();
+                let relative = path.strip_prefix(&vault).unwrap_or(&path).to_owned();
                 let size = file_size(&path)?;
                 let modified = modified_time(&path)?;
 
                 // Reuse the stored hash when the stat looks unchanged.
                 let content_hash: Blake3Hash = match existing {
-                    Some(states) if states.get(&relative).map_or(false, |s| s.size == size && s.modified_at == modified) => {
+                    Some(states)
+                        if states
+                            .get(&relative)
+                            .is_some_and(|s| s.size == size && s.modified_at == modified) =>
+                    {
                         states[&relative].content_hash
                     }
                     _ => {
@@ -59,7 +60,7 @@ pub async fn scan_vault_incremental(
                         let path_clone = path.clone();
                         task::spawn_blocking(move || hash_file_path(&path_clone))
                             .await
-                            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))??
+                            .map_err(io::Error::other)??
                     }
                 };
 
@@ -91,7 +92,7 @@ pub async fn scan_file(vault_path: &Path, relative: &Path) -> io::Result<FileSta
     let fp = full_path.clone();
     let hash = task::spawn_blocking(move || hash_file_path(&fp))
         .await
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))??;
+        .map_err(io::Error::other)??;
 
     Ok(FileState {
         relative_path: relative.to_owned(),
@@ -134,7 +135,10 @@ mod tests {
         std::fs::write(dir.path().join("sub/nested.md"), b"nested").unwrap();
         let result = scan_vault(dir.path()).await.unwrap();
         assert_eq!(result.files.len(), 1);
-        assert_eq!(result.files[0].relative_path, PathBuf::from("sub/nested.md"));
+        assert_eq!(
+            result.files[0].relative_path,
+            PathBuf::from("sub/nested.md")
+        );
     }
 
     #[tokio::test]

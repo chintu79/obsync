@@ -6,10 +6,37 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+
+// Semantic status colors, theme-aware so the dots adapt to dark mode.
+// Exposed via CompositionLocal so screens read `LocalStatusColors.current`.
+data class StatusColors(
+    val idle: Color,    // green
+    val syncing: Color, // amber
+    val offline: Color, // gray
+    val conflict: Color, // red
+)
+
+val LocalStatusColors = staticCompositionLocalOf { lightStatusColors }
+
+private val lightStatusColors = StatusColors(
+    idle = Color(0xFF16A34A),
+    syncing = Color(0xFFD97706),
+    offline = Color(0xFF737373),
+    conflict = Color(0xFFDC2626),
+)
+
+private val darkStatusColors = StatusColors(
+    idle = Color(0xFF4ADE80),
+    syncing = Color(0xFFFBBF24),
+    offline = Color(0xFF9CA3AF),
+    conflict = Color(0xFFF87171),
+)
 
 // Explicit type scale so screens never hard-code sizes:
 // titleMedium 16sp, titleSmall 14sp, bodyMedium 14sp, bodySmall 12sp, labelMedium 12sp.
@@ -46,9 +73,12 @@ fun ObsyncTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit
 ) {
-    MaterialTheme(
-        colorScheme = if (darkTheme) Dark else Light,
-        typography = AppTypography,
-        content = content,
-    )
+    val statusColors = if (darkTheme) darkStatusColors else lightStatusColors
+    CompositionLocalProvider(LocalStatusColors provides statusColors) {
+        MaterialTheme(
+            colorScheme = if (darkTheme) Dark else Light,
+            typography = AppTypography,
+            content = content,
+        )
+    }
 }

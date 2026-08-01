@@ -1,36 +1,43 @@
+<div align="center">
+
 # Obsync
 
-**Obsync** is a local-first, peer-to-peer file sync tool for keeping your Obsidian
-vault in sync between your laptop and your phone — no cloud, no accounts, no data
-leaving your devices. Everything runs on your own network over an encrypted direct
-connection.
+**Free, local-first P2P sync for your Obsidian vault. No cloud. No account. No subscription.**
 
-The sync engine is written in **Rust** (with BLAKE3 hashing, SQLite state tracking,
-and per-file conflict detection) and is embedded in an **Android** client
-(Kotlin/Jetpack Compose via JNI) and a small **web dashboard** that runs on your
-laptop.
+Sync your Obsidian vault between your laptop and your phone over your own
+network — encrypted, direct, and private. Your notes never touch a third-party
+server.
 
-> **Status:** alpha. Works end-to-end for a single laptop ⇄ phone vault. Expect
-> rough edges.
+![CI](https://github.com/chintu79/obsync/workflows/CI/badge.svg)
+![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
+![Status: alpha](https://img.shields.io/badge/status-alpha-orange)
+
+</div>
 
 ---
 
-## Features
+## Why Obsync?
 
-- **No cloud** — devices talk directly over your LAN (TCP, with key fingerprints for pairing).
-- **QR pairing** — scan a QR code on your phone to connect to your laptop's dashboard.
+Obsidian Sync costs **$4/month** and sends your vault through Obsidian's cloud.
+Obsync is an alternative that keeps your notes on your devices:
+
+- **No cloud, no accounts** — devices talk directly over your LAN (TCP, with key fingerprints for pairing).
+- **Encrypted P2P transport** — a dedicated sync protocol on your own network.
+- **QR pairing** — scan a code on the dashboard from your phone and you're connected.
 - **Continuous background sync** — the Android app syncs every 30 s while running.
-- **Conflict detection** — files edited on both sides are flagged, not clobbered.
-- **P2P transport** — encrypted sync protocol on a dedicated TCP port.
+- **Conflict detection** — files edited on both sides are flagged, never silently clobbered.
+- **Local-first** — your vault stays an ordinary folder on disk. No lock-in; leave anytime.
+
+> **Status:** alpha. Works end-to-end for a single laptop ⇄ phone vault. Expect rough edges.
 
 ---
 
-## Quick start (end users)
+## Quick start
 
 ### 1. Download the Android app
 
 Grab the latest **`obsync-vX.Y.Z.apk`** from the
-[Releases page](https://github.com/YOUR_USERNAME/Obsync/releases), then:
+[Releases page](https://github.com/chintu79/obsync/releases), then:
 
 1. Copy the APK to your Android phone (or download it directly on the phone).
 2. Open it and allow **"Install unknown apps"** for your browser / file manager.
@@ -39,8 +46,15 @@ Grab the latest **`obsync-vX.Y.Z.apk`** from the
 
 ### 2. Run the server on your laptop
 
-**Pre-built binary** (from the same Releases page) — run it and it prints the
-dashboard URL:
+**Desktop app (recommended, no terminal needed)** — grab the installer for
+your OS from the [Releases page](https://github.com/chintu79/obsync/releases)
+and double-click it. Obsync starts itself and opens the dashboard.
+
+**Or use the website:** visit the [Obsync home page](https://chintu79.github.io/obsync/)
+for one-click download links per platform.
+
+**Headless / advanced users** can run the server binary directly from the
+Releases page:
 
 ```bash
 ./obsync-server-linux-x86_64        # Linux
@@ -67,6 +81,37 @@ Either way, open **http://localhost:42021** in your browser.
 
 > Make sure both devices are on the same network (the phone should reach
 > `http://<laptop-ip>:42021`).
+
+---
+
+## Features
+
+- **Pairing wizard** on first run — scan a QR code, approve the device, done.
+- **Live dashboard** — file counts, sync activity, online/offline device status,
+  conflict list with resolution (keep local / remote / both), and snapshot
+  restore for every file.
+- **Snapshot versioning** — every edit is snapshotted on the server so you can
+  roll back.
+- **Conflict resolution** — diverged edits are surfaced as conflicts; resolve
+  per-file from the dashboard.
+- **Headless-friendly server** — the `obsync-httpd` daemon runs anywhere on your
+  network (laptop, NAS, Raspberry Pi) and exposes a REST + SSE API for scripts
+  and other UIs.
+
+## Project layout
+
+```
+core/    Rust sync engine: indexer, store, engine, P2P network, security
+httpd/   Web dashboard server (axum) — lib + thin binary; the "desktop" side
+         users run on their laptop
+cli/     Command-line tool for sync/testing
+android/ Android app (Kotlin + Jetpack Compose, embeds the core via JNI)
+desktop/ Tauri v2 desktop app — embeds httpd and opens the dashboard in a
+         window (the no-terminal release path)
+```
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and
+[CONTRIBUTING.md](CONTRIBUTING.md) for development workflow.
 
 ---
 
@@ -121,21 +166,6 @@ cargo run -p obsync-cli -- --help
 
 ---
 
-## Project layout
-
-```
-core/    Rust sync engine: indexer, store, engine, P2P network, security
-httpd/   Web dashboard server (axum) — the "desktop" side users run on their laptop
-cli/     Command-line tool for sync/testing
-android/ Android app (Kotlin + Jetpack Compose, embeds the core via JNI)
-desktop/ Tauri desktop app (React) — work-in-progress alternative to httpd
-```
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and
-[CONTRIBUTING.md](CONTRIBUTING.md) for development workflow.
-
----
-
 ## Releases
 
 Tag a release and CI builds everything automatically:
@@ -148,6 +178,7 @@ git push origin v0.1.0
 The [release workflow](.github/workflows/release.yml) produces:
 
 - **Android APK** for all supported ABIs (`arm64-v8a`, `armeabi-v7a`, `x86_64`)
+- **Desktop app installers** for Windows, macOS, and Linux (double-click to install)
 - **Server binaries** for Linux, macOS (Apple Silicon + Intel), and Windows
 
 …and attaches them to a GitHub Release.
@@ -171,6 +202,41 @@ The [release workflow](.github/workflows/release.yml) produces:
 
 ---
 
+## Roadmap
+
+See [ROADMAP.md](ROADMAP.md) for the implementation roadmap and
+[DESIGN.md](DESIGN.md) for design decisions.
+
+## Contributing
+
+We welcome contributions of all kinds — code, docs, bug reports, feature ideas.
+See [CONTRIBUTING.md](CONTRIBUTING.md) to get started, and read the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+Found a security issue? Report it privately — see [SECURITY.md](SECURITY.md).
+
+## Sponsors
+
+Obsync is developed in the open and funded by its users. If it saves you
+$4/month, consider sponsoring — every little bit keeps the project alive:
+
+<p align="center">
+  <a href="https://github.com/sponsors/chintu79">Sponsor on GitHub</a>
+</p>
+
+---
+
 ## License
 
-[MIT](LICENSE) © 2026 Obsync contributors.
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE](LICENSE))
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in Obsync shall be dual-licensed as above, without any additional
+terms or conditions.
+
+© 2026 Obsync contributors.

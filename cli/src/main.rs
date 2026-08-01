@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use obsync_core::filesystem::atomic::cleanup_stale_temps;
@@ -63,8 +63,7 @@ enum Command {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -119,7 +118,11 @@ async fn cmd_index(path: &PathBuf) -> anyhow::Result<()> {
     }
     store.set_config("revision_counter", &result.revision_counter.to_string())?;
 
-    info!("Indexed {} files (revision: {})", result.files.len(), result.revision_counter);
+    info!(
+        "Indexed {} files (revision: {})",
+        result.files.len(),
+        result.revision_counter
+    );
 
     // Show some stats
     let total_size: u64 = result.files.iter().map(|f| f.size).sum();
@@ -145,13 +148,13 @@ async fn cmd_index(path: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_hash(path: &PathBuf) -> anyhow::Result<()> {
+async fn cmd_hash(path: &Path) -> anyhow::Result<()> {
     let hash = hash_file_path(path)?;
     println!("{}  {}", hex::encode(hash), path.display());
     Ok(())
 }
 
-async fn cmd_identity(path: &PathBuf) -> anyhow::Result<()> {
+async fn cmd_identity(path: &Path) -> anyhow::Result<()> {
     let config_path = path.join(".obsync").join("config.bin");
     let store = ConfigStore::new(config_path);
 
@@ -182,21 +185,22 @@ async fn cmd_sync(path: &PathBuf, addr: &str) -> anyhow::Result<()> {
 
     let config_path = path.join(".obsync").join("config.bin");
     let store = ConfigStore::new(config_path);
-    let (device_id, device_name, fingerprint) = if let Some(identity) = DeviceIdentity::load(&store)? {
-        (
-            identity.device_id.clone(),
-            identity.device_name.clone(),
-            identity.fingerprint(),
-        )
-    } else {
-        let identity = DeviceIdentity::generate("obsync-cli".into());
-        identity.save(&store)?;
-        (
-            identity.device_id.clone(),
-            identity.device_name.clone(),
-            identity.fingerprint(),
-        )
-    };
+    let (device_id, device_name, fingerprint) =
+        if let Some(identity) = DeviceIdentity::load(&store)? {
+            (
+                identity.device_id.clone(),
+                identity.device_name.clone(),
+                identity.fingerprint(),
+            )
+        } else {
+            let identity = DeviceIdentity::generate("obsync-cli".into());
+            identity.save(&store)?;
+            (
+                identity.device_id.clone(),
+                identity.device_name.clone(),
+                identity.fingerprint(),
+            )
+        };
     info!("Device: {} ({})", device_name, device_id);
 
     let socket: std::net::SocketAddr = addr.parse()?;
@@ -209,14 +213,19 @@ async fn cmd_sync(path: &PathBuf, addr: &str) -> anyhow::Result<()> {
 
     let report = run_client_session(&mut engine, &peer).await?;
     info!("Sync complete");
-    println!("pulled: {}, pushed: {}, deleted: {}, conflicts: {}",
-        report.pulled_files, report.pushed_files, report.deleted_files, report.conflicts);
+    println!(
+        "pulled: {}, pushed: {}, deleted: {}, conflicts: {}",
+        report.pulled_files, report.pushed_files, report.deleted_files, report.conflicts
+    );
 
     Ok(())
 }
 
 async fn cmd_test_peer(dir_a: &PathBuf, dir_b: &PathBuf) -> anyhow::Result<()> {
-    info!("Starting test peer sync between {:?} and {:?}", dir_a, dir_b);
+    info!(
+        "Starting test peer sync between {:?} and {:?}",
+        dir_a, dir_b
+    );
 
     for dir in [dir_a, dir_b] {
         if !dir.exists() {

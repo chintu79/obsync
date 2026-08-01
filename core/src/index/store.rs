@@ -54,16 +54,6 @@ impl Store {
                 resolved INTEGER NOT NULL DEFAULT 0
             );
 
-            CREATE TABLE IF NOT EXISTS sync_queue (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                operation INTEGER NOT NULL,
-                relative_path TEXT NOT NULL,
-                content_hash BLOB,
-                revision INTEGER NOT NULL,
-                created_at INTEGER NOT NULL,
-                retries INTEGER NOT NULL DEFAULT 0
-            );
-
             CREATE TABLE IF NOT EXISTS device_identity (
                 device_id TEXT PRIMARY KEY,
                 public_key BLOB NOT NULL,
@@ -89,10 +79,8 @@ impl Store {
             .filter_map(|r| r.ok())
             .any(|name| name == "synced_hash");
         if !has_synced_hash {
-            self.conn.execute(
-                "ALTER TABLE file_states ADD COLUMN synced_hash BLOB",
-                [],
-            )?;
+            self.conn
+                .execute("ALTER TABLE file_states ADD COLUMN synced_hash BLOB", [])?;
         }
 
         Ok(())
@@ -140,13 +128,11 @@ impl Store {
                     4 => SyncState::Conflict,
                     _ => SyncState::Synced,
                 },
-                synced_hash: row
-                    .get::<_, Option<Vec<u8>>>(6)?
-                    .map(|bytes| {
-                        let mut h = [0u8; 32];
-                        h.copy_from_slice(&bytes);
-                        h
-                    }),
+                synced_hash: row.get::<_, Option<Vec<u8>>>(6)?.map(|bytes| {
+                    let mut h = [0u8; 32];
+                    h.copy_from_slice(&bytes);
+                    h
+                }),
             }))
         } else {
             Ok(None)
@@ -154,8 +140,10 @@ impl Store {
     }
 
     pub fn delete_file_state(&self, path: &str) -> SqlResult<()> {
-        self.conn
-            .execute("DELETE FROM file_states WHERE relative_path = ?1", params![path])?;
+        self.conn.execute(
+            "DELETE FROM file_states WHERE relative_path = ?1",
+            params![path],
+        )?;
         Ok(())
     }
 
@@ -182,13 +170,11 @@ impl Store {
                     4 => SyncState::Conflict,
                     _ => SyncState::Synced,
                 },
-                synced_hash: row
-                    .get::<_, Option<Vec<u8>>>(6)?
-                    .map(|bytes| {
-                        let mut h = [0u8; 32];
-                        h.copy_from_slice(&bytes);
-                        h
-                    }),
+                synced_hash: row.get::<_, Option<Vec<u8>>>(6)?.map(|bytes| {
+                    let mut h = [0u8; 32];
+                    h.copy_from_slice(&bytes);
+                    h
+                }),
             })
         })?;
 
@@ -276,7 +262,7 @@ impl Store {
                 relative_path,
                 local_hash.map(|h| &h[..]),
                 remote_hash.map(|h| &h[..]),
-                chrono::Utc::now().timestamp_millis(),
+                crate::filesystem::now_millis(),
             ],
         )?;
         Ok(())
@@ -336,13 +322,7 @@ mod tests {
     #[test]
     fn test_store_file_state() {
         let store = Store::open_in_memory().unwrap();
-        let state = FileState::new(
-            "notes/test.md".into(),
-            test_hash(),
-            100,
-            1000,
-            1,
-        );
+        let state = FileState::new("notes/test.md".into(), test_hash(), 100, 1000, 1);
         store.upsert_file_state(&state).unwrap();
         let retrieved = store.get_file_state("notes/test.md").unwrap().unwrap();
         assert_eq!(retrieved.relative_path, state.relative_path);

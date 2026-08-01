@@ -2,13 +2,15 @@ pub mod atomic;
 pub mod ignore;
 pub mod io;
 pub mod versioning;
-pub mod watcher;
 
-pub type FileSize = u64;
 pub type Blake3Hash = [u8; 32];
 
-pub fn compute_hash(data: &[u8]) -> Blake3Hash {
-    blake3::hash(data).into()
+/// Current Unix time in milliseconds.
+pub fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 pub fn compute_hash_streaming(reader: impl std::io::Read) -> std::io::Result<Blake3Hash> {

@@ -23,11 +23,7 @@ blake3 = "1"
 # SQLite
 rusqlite = { version = "0.31", features = ["bundled"] }
 
-# Filesystem watching
-notify = { version = "6", features = ["macos_fsevent"] }
-
 # Error handling
-thiserror = "1"
 anyhow = "1"
 
 # Logging
@@ -38,41 +34,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 x25519-dalek = { version = "2", features = ["static_secrets", "reusable_secrets"] }
 aes-gcm = "0.10"
 rand = "0.8"
-zeroize = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 hex = "0.4"
-
-# Noise protocol
-noise-protocol = { version = "0.2", optional = true }
-
-# mDNS discovery
-mdns-sd = { version = "0.10", optional = true }
-
-# Path handling
-path-clean = "1"
-
-# UUID
-uuid = { version = "1", features = ["v4"] }
-
-# Time
-chrono = "0.4"
 
 # Binary serialization
 bincode = "1"
 
-# Base64 (for QR data encoding)
-base64 = "0.22"
-
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.21", features = ["invocation"] }
 
-[features]
-default = []
-network = ["dep:noise-protocol", "dep:mdns-sd"]
-desktop = []
-android = []
-
 [dev-dependencies]
 tempfile = "3"
-assert_matches = "1"
-proptest = "1"

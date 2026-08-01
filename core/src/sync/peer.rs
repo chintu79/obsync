@@ -37,12 +37,8 @@ pub async fn run_client_session(
     // 1. Exchange manifests
     let local = engine.build_manifest();
     let local_json = serde_json::to_vec(&local)?;
-    peer.send_message(&ProtocolMessage::new(
-        MessageType::Manifest,
-        1,
-        local_json,
-    ))
-    .await?;
+    peer.send_message(&ProtocolMessage::new(MessageType::Manifest, 1, local_json))
+        .await?;
 
     let msg = peer.receive_message().await?;
     if msg.message_type != MessageType::Manifest {
@@ -76,7 +72,7 @@ pub async fn run_client_session(
                     // Deleted locally before; push the deletion instead
                     continue;
                 }
-                pull_file(engine, peer, *path, rf, &mut request_id).await?;
+                pull_file(engine, peer, path, rf, &mut request_id).await?;
                 report.pulled_files += 1;
             }
             Some(lf) => {
@@ -87,8 +83,8 @@ pub async fn run_client_session(
                             // Keep the local version at the original path and
                             // pull the remote content into a conflict copy.
                             warn!("Conflict on {:?}", path);
-                            if let Some(copy) = engine
-                                .plan_conflict_copy(path, &rf.content_hash, true)?
+                            if let Some(copy) =
+                                engine.plan_conflict_copy(path, &rf.content_hash, true)?
                             {
                                 let dest = engine.vault_path().join(&copy);
                                 let size = pull_file_to(
@@ -100,18 +96,23 @@ pub async fn run_client_session(
                                     &mut request_id,
                                 )
                                 .await?;
-                                engine.record_remote_file(&copy, &rf.content_hash, size, rf.modified_at)?;
+                                engine.record_remote_file(
+                                    &copy,
+                                    &rf.content_hash,
+                                    size,
+                                    rf.modified_at,
+                                )?;
                             }
                             report.conflicts += 1;
                         }
                         SideOutcome::LocalWins => {
                             // Local newer → push
-                            push_file(engine, peer, *path, lf, &mut request_id).await?;
+                            push_file(engine, peer, path, lf, &mut request_id).await?;
                             report.pushed_files += 1;
                         }
                         SideOutcome::RemoteWins => {
                             // Server newer → pull
-                            pull_file(engine, peer, *path, rf, &mut request_id).await?;
+                            pull_file(engine, peer, path, rf, &mut request_id).await?;
                             report.pulled_files += 1;
                         }
                     }
@@ -123,7 +124,7 @@ pub async fn run_client_session(
     // 4. Push: files only on local
     for (path, lf) in &local_map {
         if !remote_map.contains_key(path) && !remote_tombstones.contains(path) {
-            push_file(engine, peer, *path, lf, &mut request_id).await?;
+            push_file(engine, peer, path, lf, &mut request_id).await?;
             report.pushed_files += 1;
         }
     }
@@ -163,8 +164,12 @@ pub async fn run_client_session(
     }
 
     // 7. Done
-    peer.send_message(&ProtocolMessage::new(MessageType::Disconnect, request_id, vec![]))
-        .await?;
+    peer.send_message(&ProtocolMessage::new(
+        MessageType::Disconnect,
+        request_id,
+        vec![],
+    ))
+    .await?;
 
     info!(
         "Client sync complete: pulled={} pushed={} deleted={} conflicts={}",
@@ -344,7 +349,7 @@ async fn handle_server_operation(
                     .unwrap_or(original_dest.clone()),
                 None => original_dest.clone(),
             };
-            let data = receive_file_data(peer, &engine.vault_path(), &dest).await?;
+            let data = receive_file_data(peer, engine.vault_path(), &dest).await?;
             let hash = hash_file_path(&dest)?;
             let hash = match op.content_hash {
                 Some(expected) => {
@@ -358,7 +363,7 @@ async fn handle_server_operation(
             if dest != original_dest {
                 // Remote content landed in a conflict copy: index the copy as
                 // a new file (it syncs to peers) and leave the original alone.
-                if let Ok(copy_rel) = dest.strip_prefix(&engine.vault_path()) {
+                if let Ok(copy_rel) = dest.strip_prefix(engine.vault_path()) {
                     engine.record_remote_file(copy_rel, &hash, data, op.modified_at)?;
                 }
             } else {
@@ -434,7 +439,10 @@ async fn receive_file_data(
     loop {
         let msg = peer.receive_message().await?;
         if msg.message_type != MessageType::FileChunk {
-            return Err(anyhow::anyhow!("expected FileChunk, got {:?}", msg.message_type));
+            return Err(anyhow::anyhow!(
+                "expected FileChunk, got {:?}",
+                msg.message_type
+            ));
         }
         let chunk: FileChunkPayload = bincode::deserialize(&msg.payload)?;
         writer.writer().write_all(&chunk.data)?;
@@ -487,9 +495,13 @@ mod tests {
         };
 
         let sender = tokio::spawn(async move {
-            send_file_data(&client_peer, Path::new("f.bin"), &src).await.unwrap();
+            send_file_data(&client_peer, Path::new("f.bin"), &src)
+                .await
+                .unwrap();
         });
-        let total = receive_file_data(&server_peer, dir.path(), &dest).await.unwrap();
+        let total = receive_file_data(&server_peer, dir.path(), &dest)
+            .await
+            .unwrap();
         sender.await.unwrap();
 
         assert_eq!(total as usize, data.len());

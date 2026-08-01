@@ -52,10 +52,7 @@ mod tests {
             resolved: false,
         };
         let conflict_path = entry.conflict_path("pixel");
-        assert_eq!(
-            conflict_path,
-            PathBuf::from("notes/idea.conflict-pixel.md")
-        );
+        assert_eq!(conflict_path, PathBuf::from("notes/idea.conflict-pixel.md"));
     }
 
     #[test]
@@ -71,6 +68,9 @@ mod tests {
             resolved: false,
         };
         let conflict_path = entry.conflict_path("desktop");
-        assert_eq!(conflict_path, PathBuf::from("notes/README.conflict-desktop"));
+        assert_eq!(
+            conflict_path,
+            PathBuf::from("notes/README.conflict-desktop")
+        );
     }
 }

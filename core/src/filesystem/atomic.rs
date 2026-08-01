@@ -12,10 +12,7 @@ impl AtomicWriter {
     pub fn new(final_path: PathBuf) -> io::Result<Self> {
         let temp_name = format!(
             ".{}.sync-temp",
-            final_path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
+            final_path.file_name().unwrap_or_default().to_string_lossy()
         );
         let temp_path = final_path.with_file_name(temp_name);
 
@@ -117,9 +114,12 @@ mod tests {
             writer.commit().unwrap();
         }
 
-        let has_temp = std::fs::read_dir(dir.path())
-            .unwrap()
-            .any(|e| e.unwrap().file_name().to_string_lossy().ends_with(".sync-temp"));
+        let has_temp = std::fs::read_dir(dir.path()).unwrap().any(|e| {
+            e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".sync-temp")
+        });
         assert!(!has_temp);
     }
 

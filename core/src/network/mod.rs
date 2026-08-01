@@ -1,30 +1,31 @@
-pub mod discovery;
 pub mod peer;
 pub mod protocol;
-pub mod transport;
 
-use thiserror::Error;
-
-#[derive(Error, Debug)]
+#[derive(Debug)]
 pub enum NetworkError {
-    #[error("discovery error: {0}")]
-    Discovery(String),
-
-    #[error("connection failed: {0}")]
     Connection(String),
-
-    #[error("peer not found: {0}")]
-    PeerNotFound(String),
-
-    #[error("protocol error: {0}")]
     Protocol(String),
-
-    #[error("encryption error: {0}")]
     Encryption(String),
-
-    #[error("timeout")]
     Timeout,
-
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(std::io::Error),
 }
+
+impl From<std::io::Error> for NetworkError {
+    fn from(e: std::io::Error) -> Self {
+        NetworkError::Io(e)
+    }
+}
+
+impl std::fmt::Display for NetworkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NetworkError::Connection(msg) => write!(f, "connection failed: {msg}"),
+            NetworkError::Protocol(msg) => write!(f, "protocol error: {msg}"),
+            NetworkError::Encryption(msg) => write!(f, "encryption error: {msg}"),
+            NetworkError::Timeout => write!(f, "timeout"),
+            NetworkError::Io(e) => write!(f, "io error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for NetworkError {}

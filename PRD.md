@@ -75,11 +75,11 @@ Wants full control over data. Will not use cloud services. Needs LAN-only sync w
 - Desktop: directory chooser, stores path in config
 - Android: SAF directory picker for scoped storage
 
-### FR-02: Filesystem Monitoring
-- Native filesystem events (inotify on Linux, FSEvents on macOS, ReadDirectoryChanges on Windows)
-- Debounce bursts (configurable, default ~500ms)
+### FR-02: Change Discovery
+- Re-scan the vault at the start of each sync session (no filesystem watcher)
+- Skip unchanged files via BLAKE3 hash comparison against stored state
 - Ignore common temp/editor files
-- Prevent sync feedback loops
+- Server (authoritative) detects deletions; phone client is additive-only
 
 ### FR-03: Indexing
 - Walk vault on first run and after unclean shutdown
@@ -90,13 +90,12 @@ Wants full control over data. Will not use cloud services. Needs LAN-only sync w
 ### FR-04: Pairing
 - QR code displayed on desktop
 - Scanned by Android camera
-- Contains: protocol version, device ID, public key fingerprint, ephemeral pairing token
-- Single pairing ceremony; persisted trust
+- Contains: host, port, device identity fingerprint
+- Single pairing ceremony; approvals persist in `~/.obsync-approved.json`
 
-### FR-05: LAN Discovery
-- mDNS-based zero-config peer discovery
-- No manual IP entry
-- Background discovery, negligible idle resource use
+### FR-05: Connection Setup
+- Phone connects directly to the desktop's LAN address from the QR
+- No peer discovery or manual IP entry beyond the QR
 
 ### FR-06: Encrypted Transport
 - Authenticated encryption for all traffic
@@ -105,13 +104,13 @@ Wants full control over data. Will not use cloud services. Needs LAN-only sync w
 - Replay-resistant
 
 ### FR-07: Bidirectional Sync
-- Full state reconciliation on connect
-- Incremental changes streamed in real-time
+- Full state reconciliation on every sync session
+- Server refreshes its index before each session so direct disk edits reach the phone
 - Create / modify / delete / rename / move support
 - RENAME detected via content hash match
 
 ### FR-08: Conflict Handling
-- Detect concurrent edits to same base version
+- Detect divergent edits since the last sync agreement (`synced_hash`)
 - Preserve both versions on both devices
 - File.conflict-{device}.md naming
 - Record conflict metadata (device, timestamps, revision)
@@ -123,10 +122,10 @@ Wants full control over data. Will not use cloud services. Needs LAN-only sync w
 - Atomic rename to final path
 - Clean up stale temps on startup
 
-### FR-10: Offline Queue
-- Persist pending changes across restarts
-- References to file revisions, not copies of content
-- Auto-sync when peer reconnects
+### FR-10: Offline Behavior
+- If the phone is offline, the desktop simply waits for it to reconnect
+- On reconnect, a fresh full reconciliation picks up whatever changed in between
+- No persistent change queue or content copies needed
 
 ### FR-11: Deletion Synchronization
 - Tombstones (compact: path + revision + timestamp)
@@ -157,7 +156,7 @@ Wants full control over data. Will not use cloud services. Needs LAN-only sync w
 | NFR-04 | Cold start (desktop) | <2 seconds |
 | NFR-05 | Cold start (Android) | <1 second |
 | NFR-06 | Initial index (10K files) | <30 seconds |
-| NFR-07 | Change detection latency | <2 seconds typical |
+| NFR-07 | Change detection latency | Next sync session (no watcher) |
 | NFR-08 | Metadata DB size (10K files) | <5 MB |
 | NFR-09 | Transfer encryption overhead | <10% throughput penalty |
 | NFR-10 | Mean time to sync single .md | <1 second (LAN) |

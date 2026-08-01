@@ -2,38 +2,53 @@
 
 ## Overview
 
-Obsync uses a shared Rust sync core embedded in a Tauri+React desktop app and an Android native client. All synchronization logic lives in the core library. Platform clients provide only UI and system integration.
+Obsync uses a shared Rust sync core embedded in three consumers: the `obsync-httpd`
+server (which is also embedded in a Tauri v2 desktop app) and an Android native
+client. All synchronization logic lives in the core library. Platform clients
+provide only UI and system integration.
 
 ```
-                    ┌─────────────────────────────┐
-                    │        Sync Core (Rust)      │
-                    │                               │
-                    │  ┌─────────┐  ┌───────────┐  │
-                    │  │ Indexer │  │   Engine   │  │
-                    │  └────┬────┘  └─────┬─────┘  │
-                    │       │              │        │
-                    │  ┌────▼────┐  ┌──────▼──────┐ │
-                    │  │ Store   │  │  Network    │ │
-                    │  └─────────┘  └──────┬──────┘ │
-                    │                      │        │
-                    │  ┌─────────┐  ┌──────▼──────┐ │
-                    │  │Conflict │  │  Security   │ │
-                    │  └─────────┘  └─────────────┘ │
-                    └───────────────┬───────────────┘
-                                    │
-                    ┌───────────────┴───────────────┐
-                    │                               │
-          ┌─────────▼─────────┐           ┌─────────▼─────────┐
-          │  Desktop Client   │           │  Android Client   │
-          │  (Tauri + React)  │           │  (Kotlin/Jetpack) │
-          │                    │           │                    │
-          │  ┌──────────────┐ │           │  ┌──────────────┐ │
-          │  │  Dashboard   │ │           │  │  Dashboard   │ │
-          │  │  Devices      │ │           │  │  QR Scanner  │ │
-          │  │  Conflicts   │ │           │  │  Settings    │ │
-          │  │  Settings    │ │           │  │  Conflicts   │ │
-          │  └──────────────┘ │           │  └──────────────┘ │
-          └───────────────────┘           └───────────────────┘
+                  ┌────────────────────────────────────────┐
+                  │             obsync-httpd               │
+                  │                                        │
+                  │  ┌────────────┐   ┌────────────────┐   │
+                  │  │ Dashboard  │   │  Sync TCP      │   │
+                  │  │  :42021    │   │  server :42042 │   │
+                  │  │ webui.html │   └───────┬────────┘   │
+                  │  └─────┬──────┘           │            │
+                  │        │ activity/SSE     │            │
+                  │        ▼                  │            │
+                  │  ┌────────────┐   ┌───────▼────────┐   │
+                  │  │  AppState  │   │     Engine      │   │
+                  │  └────────────┘   └───────┬────────┘   │
+                  └───────────────────────────┼────────────┘
+                                              │
+                  ┌───────────────────────────┼────────────┐
+                  │                    Sync Core (core/)    │
+                  │                       │                 │
+                  │   ┌─────────┐  ┌───────▼───────┐        │
+                  │   │ Indexer │  │ Sync Engine   │        │
+                  │   └────┬────┘  └───────┬───────┘        │
+                  │        │               │                │
+                  │   ┌────▼────┐  ┌───────▼───────┐        │
+                  │   │ Store   │  │ Network peer  │        │
+                  │   │(SQLite) │  │  (protocol)   │        │
+                  │   └─────────┘  └───────┬───────┘        │
+                  │        │               │                │
+                  │   ┌────▼────┐  ┌───────▼───────┐        │
+                  │   │Conflict │  │  Security     │        │
+                  │   │(detect/ │  │  (crypto +    │        │
+                  │   │ resolve)│  │   identity)   │        │
+                  │   └─────────┘  └───────────────┘        │
+                  └─────────────────────────────────────────┘
+                                              │
+                    ┌─────────────────────────┼─────────────┐
+                    │                         │             │
+          ┌─────────▼─────────┐   ┌───────────▼──────────┐
+          │  Desktop (Tauri)  │   │  Android (JNI)       │
+          │  embeds httpd     │   │  syncOnce → peer      │
+          │  run_server()     │   │  client               │
+          └───────────────────┘   └──────────────────────┘
 ```
 
 ---
@@ -42,52 +57,59 @@ Obsync uses a shared Rust sync core embedded in a Tauri+React desktop app and an
 
 ### Layer 1: Core Library (`core/`)
 
-Platform-independent Rust library. No UI, no platform-specific dependencies (except where abstracted via traits).
+Platform-independent Rust library. No UI, no platform-specific dependencies
+(except the Android JNI bridge in `android.rs`, gated by `#[cfg(target_os = "android")]`).
+
+**Modules:**
+
+- `index/` — file scanner, hashing (BLAKE3), state tracking in SQLite (`scanner`,
+  `compare`, `store`, `state`).
+- `sync/` — `engine` (refresh/apply/tombstone orchestration), `delta` (change
+  computation), `peer` (client/server sync-session logic).
+- `network/` — `peer` (hand-rolled TCP sync protocol, port 42042) and `protocol`
+  (message framing). No QUIC/Noise/mDNS.
+- `security/` — `crypto` (X25519 + AES-GCM session encryption) and `identity`
+  (device IDs + key persistence).
+- `conflict/` — `detector` (synced_hash-based divergence), `record`, `resolution`.
+- `filesystem/` — `io` (streaming hash, read/write), `atomic` (atomic writes),
+  `ignore`, `versioning` (snapshots), plus `now_millis()` helper.
+- `storage/` — `config` and `db` (SQLite schema).
+- `android.rs` — JNI surface for the Android app (`#[cfg(target_os = "android")]`).
 
 **Responsibilities:**
 - File indexing and hashing (BLAKE3)
 - State tracking in SQLite
-- Sync engine with state machine
+- Sync engine (refresh → diff → push/pull, authoritative vs additive)
 - Conflict detection and recording
-- Change queue management
-- P2P transport (TCP + Noise Protocol)
-- mDNS peer discovery
+- P2P sync over a hand-rolled TCP protocol
 - Device identity and pairing
 - Cryptographic operations
 
-### Layer 2: Platform Bridge
+### Layer 2: HTTP Server (`httpd/`)
 
-Thin FFI or IPC layer exposing core functionality to the platform UI.
+`obsync-httpd` is a lib + thin binary. It owns:
 
-**Desktop (Tauri):**
-- Rust core compiled as a Tauri command handler
-- Tauri IPC bridge: React ↔ Rust core
-- Filesystem watcher integration (notify crate)
-- System tray integration
+- The web dashboard (single-file `webui.html`, served via `include_str!` on
+  port 42021) — first-run pairing wizard, approve/reject, files/conflicts/
+  versions/activity views.
+- The P2P sync TCP server (port 42042), calling `engine.refresh_index(true)`
+  before every session.
+- A REST API (`/api/status`, `/api/select-vault`, `/api/sync-now`,
+  `/api/files`, `/api/devices`, `/api/conflicts`, `/api/versions`,
+  `/api/restore`, `/api/identity`, `/api/pairing-qr`, `/api/pending`,
+  `/api/approve/:id`, `/api/reject/:id`, etc.).
+- Live dashboard updates via Server-Sent Events (`/api/events`, tokio broadcast
+  fed by `record_activity`), with a fallback polling loop in the UI.
 
-**Android (Kotlin):**
-- Rust core compiled via JNI (jni crate)
-- Kotlin wrapper exposing suspend functions
-- FileSystemWatcherService using Android's FileObserver or DocumentFile
-- Foreground service for background sync
+The desktop Tauri app embeds `obsync_httpd::run_server()` directly and opens a
+webview at `http://127.0.0.1:42021` — no separate IPC layer needed.
 
-### Layer 3: Platform UI
+### Layer 3: Platform Clients
 
-Thin presentation layer. No sync logic.
-
-**Desktop (React + Tailwind):**
-- SyncDashboard
-- DeviceList
-- PairingView (QR display)
-- ConflictList
-- SettingsPanel
-
-**Android (Jetpack Compose):**
-- SyncDashboard
-- DeviceList
-- QRScannerView
-- ConflictList
-- SettingsPanel
+- **Desktop (Tauri v2):** thin wrapper around `obsync-httpd`. `frontendDist` is
+  a static placeholder; the real UI is httpd's `webui.html` in the webview.
+- **Android (Kotlin + JNI):** calls the Rust core via `jni`; syncs by dialing
+  the desktop's `:42042` sync port (additive-only, `refresh_index(false)`).
 
 ---
 
@@ -95,25 +117,30 @@ Thin presentation layer. No sync logic.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                      Application                         │
-├─────────────────────────────────────────────────────────┤
+│                        httpd                             │
 │                                                          │
-│  ┌──────────┐    ┌───────────┐    ┌───────────────────┐ │
-│  │ Watcher  │───→│  Engine   │←───│  Network Service  │ │
-│  └──────────┘    └─────┬─────┘    └───────────────────┘ │
-│                        │                                 │
-│              ┌─────────┼─────────┐                       │
-│              │         │         │                       │
-│         ┌────▼───┐ ┌──▼───┐ ┌───▼────┐                  │
-│         │ Index  │ │Queue │ │Conflict│                  │
-│         └────┬───┘ └──────┘ └───┬────┘                  │
-│              │                  │                        │
-│         ┌────▼────────────┐     │                        │
-│         │  SQLite Store   │◄────┘                        │
-│         └─────────────────┘                              │
+│  ┌──────────────┐    ┌────────────┐   ┌───────────────┐  │
+│  │  REST + SSE  │    │  AppState  │   │  Sync server  │  │
+│  └──────┬───────┘    └─────┬──────┘   └───────┬───────┘  │
+│         │ activity         │                  │          │
+│         ▼                  ▼                  ▼          │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │                    Engine                           │  │
+│  └────────────────────────┬───────────────────────────┘  │
+│                           │                              │
+│                   ┌───────┼─────────────┐                │
+│                   │       │             │                │
+│              ┌────▼───┐ ┌─▼────┐ ┌──────▼─────┐         │
+│              │ Index  │ │Store │ │   peer     │         │
+│              │ scanner│ │(SQL) │ │ (protocol) │         │
+│              └────────┘ └──────┘ └────────────┘         │
 │                                                          │
-└─────────────────────────────────────────────────────────┘
+└──────────────────────────────────────────────────────────┘
 ```
+
+Sync sessions flow through `sync/peer.rs`: the client sends its manifest, the
+server diffs (`index/compare.rs`), and both sides apply deltas (`delta.rs`) using
+the conflict rules in `conflict/detector.rs`.
 
 ---
 
@@ -126,34 +153,15 @@ Main Thread (UI)
     │
 Async Runtime (tokio)
     │
-    ├── Network I/O (transport, discovery)
+    ├── Network I/O (sync sessions, SSE broadcast)
     ├── File I/O (streaming hash, read/write)
-    ├── Sync engine (state machine)
+    ├── Sync engine (refresh/diff/apply)
     │
 Blocking Pool
     │
-    ├── SQLite operations
+    ├── SQLite operations (spawn_blocking)
     ├── CPU-bound hashing for large files
-    └── Filesystem walks
-```
-
----
-
-## Platform-Specific Abstractions
-
-```rust
-/// Filesystem watcher abstraction
-#[cfg(target_os = "linux")]
-type Watcher = inotify::InotifyWatcher;
-#[cfg(target_os = "macos")]
-type Watcher = fsevent::FsEventWatcher;
-#[cfg(target_os = "windows")]
-type Watcher = readdir::ReadDirectoryChangesWatcher;
-
-trait FileWatcher {
-    fn watch(&mut self, path: &Path) -> Result<()>;
-    fn event_stream(&mut self) -> Box<dyn Stream<Item = WatchEvent>>;
-}
+    └── Filesystem walks (refresh_index)
 ```
 
 ---
@@ -161,40 +169,42 @@ trait FileWatcher {
 ## Deployment Architecture
 
 ### Desktop
-- Single binary (Tauri app)
-- Embedded SQLite database in app data directory
+- Single binary (Tauri app embedding `obsync-httpd`)
+- Embedded SQLite database in the vault's obsync data directory
 - Rust core statically linked
 - No external runtime dependencies
 
 ### Android
-- APK with bundled native .so for Rust core
-- SQLite via rusqlite (or Android SQLite via JNI bridge)
-- Foreground service with low-priority notification
-- SAF-compatible file access
+- APK with bundled native .so for Rust core (built via `cargo ndk` + Gradle
+  `buildRust` task)
+- SQLite via rusqlite (bundled)
+- Syncs over the phone's hotspot / LAN to the desktop's `:42042` port
 
 ---
 
-## Network Topology (V1)
+## Network Topology
 
 ```
-Desktop (server + client)
+Desktop (authoritative server, port 42042)
     │
-    │  mDNS: _obsync._tcp.local
-    │  TCP: Noise-encrypted stream
+    │  TCP, hand-rolled sync protocol (X25519/AES-GCM session)
     │
-Android (client + server)
+Android (client, additive-only)
     │
-    └── Peer table: [desktop_id → (address, port, public_key)]
+    └── Peer table: [device_id → (address, port, public_key)]
 ```
 
-### Discovery Protocol
-1. Desktop advertises `_obsync._tcp.local` via mDNS
-2. Android discovers service, resolves address
-3. If previously paired → connect directly
-4. If not paired → show in device list for pairing
+### Pairing
+1. Desktop selects a vault and shows a QR code (`/api/pairing-qr`) containing
+   host, port, and device identity.
+2. Android scans the QR, connects to the sync port, and presents its own
+   identity for approval.
+3. The desktop approves or rejects (`/api/approve/:id`, `/api/reject/:id`);
+   approvals persist in `~/.obsync-approved.json`.
 
-### Transport Protocol
-- TCP with Noise Protocol (NX handshake)
-- Protocol version in every message
-- Request-response with correlation IDs
-- Streaming for large file transfers
+### Sync Protocol
+- TCP with X25519 + AES-GCM encrypted sessions
+- Protocol version and message framing in `network/protocol.rs`
+- Server refreshes its index (`refresh_index(true)`) before each session so
+  direct disk edits reach the phone
+- Conflict resolution keyed on `file_states.synced_hash` — see AGENTS.md

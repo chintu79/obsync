@@ -3,143 +3,753 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Obsync — Free P2P sync for Obsidian</title>
-<meta name="description" content="Sync your Obsidian vault between laptop and phone. No cloud, no account, no subscription.">
+<title>Obsync — Free P2P sync for Obsidian, no cloud</title>
+<meta name="description" content="Sync your Obsidian vault between laptop and phone, directly over your own network. No cloud. No account. No subscription. Free forever, open source.">
+<meta property="og:title" content="Obsync — Free P2P sync for Obsidian">
+<meta property="og:description" content="Your vault, on your devices. Encrypted P2P sync with QR pairing. No cloud, no account, no subscription.">
+<meta property="og:image" content="assets/logo.svg">
+<meta name="theme-color" content="#0e0e10">
+<link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #1e1e2e; --panel: #27273a; --text: #cdd6f4; --muted: #a6adc8;
-    --accent: #7289da; --accent-2: #cba6f7; --good: #a6e3a1; --border: #313244;
+    --bg: #0e0e10;
+    --surface: #161618;
+    --surface-hi: #1e1e21;
+    --border: #2b2b2e;
+    --text: #f2f2f0;
+    --muted: #93938f;
+    --faint: #63635f;
+    --accent: #d9ff5b;
+    --accent-dim: #8ea23a;
+    --radius: 4px;
+    --font-display: "Space Grotesk", system-ui, sans-serif;
+    --font-body: "Inter", system-ui, sans-serif;
+    --ease: cubic-bezier(.4,0,.2,1);
   }
+
   * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
   body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
     line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 960px; margin: 0 auto; padding: 48px 24px 80px; }
-  header { text-align: center; margin-bottom: 48px; }
-  h1 { font-size: 2.6rem; margin: 0 0 8px; letter-spacing: -0.02em; }
-  .tag { font-size: 1.15rem; color: var(--muted); margin-bottom: 24px; }
-  .badges { margin-bottom: 32px; }
-  .badges img { height: 20px; }
-  .cta-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  a { color: var(--text); }
+  h1,h2,h3,h4 {
+    font-family: var(--font-display);
+    line-height: 1.1;
+    letter-spacing: -0.01em;
+    margin: 0;
+    font-weight: 600;
+  }
+  p { margin: 0; }
+
+  .wrap { max-width: 1080px; margin: 0 auto; padding-inline: 24px; }
+
+  .section { padding-block: 88px; border-top: 1px solid var(--border); }
+  .section:first-of-type { border-top: none; }
+  .section-head { max-width: 640px; margin-bottom: 48px; }
+  .eyebrow {
+    font-family: var(--font-display);
+    font-size: .8rem;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 14px;
+  }
+  .section-head h2 { font-size: clamp(1.6rem,3.4vw,2.2rem); }
+  .section-head p { color: var(--muted); margin-top: 14px; font-size: 1rem; max-width: 60ch; }
+
+  nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-inner { display: flex; align-items: center; gap: 24px; height: 60px; }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 1.05rem;
+    text-decoration: none;
+  }
+  .brand-mark {
+    width: 22px;
+    height: 22px;
+    background: var(--accent);
+    color: var(--bg);
+    display: grid;
+    place-items: center;
+    font-size: 13px;
+    font-weight: 700;
+  }
+  .nav-links { display: flex; gap: 4px; margin-inline-start: auto; }
+  .nav-links a {
+    position: relative;
+    color: var(--muted);
+    text-decoration: none;
+    font-size: .9rem;
+    font-weight: 500;
+    padding: 8px 12px;
+    transition: color .15s;
+  }
+  .nav-links a::after {
+    content: "";
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    bottom: 5px;
+    height: 1px;
+    background: var(--accent);
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform .2s var(--ease);
+  }
+  .nav-links a:hover { color: var(--text); }
+  .nav-links a:hover::after { transform: scaleX(1); }
+  .nav-actions { display: flex; align-items: center; gap: 10px; }
+  @media (max-width: 760px) { .nav-links { display: none; } }
+
   .btn {
-    display: inline-block; padding: 14px 28px; border-radius: 10px;
-    text-decoration: none; font-weight: 600; font-size: 1rem;
-    background: var(--accent); color: #fff; transition: transform .1s, box-shadow .1s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    font-family: var(--font-body);
+    font-size: .92rem;
+    font-weight: 600;
+    padding: 11px 20px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    text-decoration: none;
+    cursor: pointer;
+    transition: background .15s var(--ease), border-color .15s var(--ease), color .15s var(--ease), transform .15s var(--ease);
   }
-  .btn:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(114,137,218,.35); }
-  .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
-  h2 { font-size: 1.4rem; margin: 48px 0 16px; color: var(--accent-2); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
-  .card {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
-    padding: 20px; display: flex; flex-direction: column; gap: 8px;
+  .btn:active { transform: scale(.97); }
+  .btn-primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  .btn-primary:hover { background: #e6ff85; border-color: #e6ff85; }
+  .btn-secondary { background: transparent; color: var(--text); }
+  .btn-secondary:hover { border-color: var(--text); }
+  .btn-lg { padding: 14px 24px; font-size: 1rem; }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn .count.hidden { display: none; }
+  .btn svg { flex: 0 0 auto; }
+
+  .hero { padding-block: 72px 56px; }
+  .hero-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 56px; align-items: center; }
+  @media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; gap: 40px; } }
+  .hero-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: .8rem;
+    font-weight: 600;
+    color: var(--accent);
+    border: 1px solid var(--border);
+    padding: 5px 12px;
+    border-radius: 999px;
+    margin-bottom: 22px;
   }
-  .card h3 { margin: 0; font-size: 1.05rem; }
-  .card p { margin: 0; color: var(--muted); font-size: .95rem; }
-  .steps { counter-reset: step; display: grid; gap: 12px; }
-  .step {
-    display: flex; gap: 16px; align-items: flex-start;
-    background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px;
+  .hero-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  .hero h1 { font-size: clamp(2.2rem,5vw,3.4rem); letter-spacing: -0.02em; }
+  .accent-text { color: var(--accent); }
+  .hero-sub { color: var(--muted); font-size: 1.05rem; margin-top: 18px; max-width: 50ch; }
+  .hero-cta { display: flex; gap: 12px; margin-top: 28px; flex-wrap: wrap; }
+  .hero-note { color: var(--faint); font-size: .85rem; margin-top: 18px; }
+
+  .hero-art { position: relative; border: 1px solid var(--border); background: var(--surface); }
+  .hero-art .scene { width: 100%; height: auto; display: block; }
+  .sync-path {
+    fill: none;
+    stroke: var(--accent-dim);
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-dasharray: 5 7;
+    animation: flow 2.6s linear infinite;
   }
-  .step::before {
-    counter-increment: step; content: counter(step);
-    flex: 0 0 32px; height: 32px; border-radius: 50%;
-    background: var(--accent); color: #fff; font-weight: 700;
-    display: flex; align-items: center; justify-content: center;
+  @keyframes flow { to { stroke-dashoffset: -24; } }
+  .packet { fill: var(--accent); animation: travel 3s var(--ease) infinite; }
+  .packet.reverse { animation-direction: reverse; }
+  @keyframes travel { from { offset-distance: 0%; } to { offset-distance: 100%; } }
+  .art-caption {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    font-size: .78rem;
+    color: var(--faint);
+    font-family: var(--font-display);
+    letter-spacing: .04em;
+    text-transform: uppercase;
   }
-  .step b { color: var(--text); }
-  code {
-    background: #181825; padding: 2px 6px; border-radius: 5px;
-    font-size: .9em; font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+  .art-caption .live { color: var(--accent); display: flex; align-items: center; gap: 6px; }
+  .art-caption .live .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: pulse 2s infinite;
   }
-  .faq p { color: var(--muted); }
-  footer { text-align: center; color: var(--muted); margin-top: 64px; font-size: .9rem; }
-  footer a { color: var(--accent-2); }
-  .note { color: var(--muted); font-size: .9rem; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+
+  .stats { display: grid; grid-template-columns: repeat(4,1fr); border: 1px solid var(--border); margin-top: 64px; }
+  .stat { padding: 24px; border-right: 1px solid var(--border); }
+  .stat:last-child { border-right: none; }
+  @media (max-width: 760px) {
+    .stats { grid-template-columns: repeat(2,1fr); }
+    .stat:nth-child(2) { border-right: none; }
+  }
+  .stat h3 { font-size: 1.7rem; font-variant-numeric: tabular-nums; }
+  .stat h3 .suffix { color: var(--accent); }
+  .stat p { color: var(--muted); font-size: .85rem; margin-top: 6px; }
+
+  .features { display: grid; grid-template-columns: repeat(3,1fr); border: 1px solid var(--border); }
+  .features .card { padding: 28px 24px; border-right: 1px solid var(--border); transition: background .15s var(--ease); }
+  .features .card:nth-child(3n) { border-right: none; }
+  .features .card:nth-child(-n+3) { border-bottom: 1px solid var(--border); }
+  @media (max-width: 900px) {
+    .features { grid-template-columns: repeat(2,1fr); }
+    .features .card:nth-child(2n) { border-right: none; }
+    .features .card:nth-child(3n) { border-right: 1px solid var(--border); }
+    .features .card:nth-child(-n+4) { border-bottom: 1px solid var(--border); }
+  }
+  @media (max-width: 620px) {
+    .features { grid-template-columns: 1fr; }
+    .features .card { border-right: none !important; border-bottom: 1px solid var(--border) !important; }
+    .features .card:last-child { border-bottom: none !important; }
+  }
+  .card:hover { background: var(--surface); }
+  .card-icon {
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--border);
+    color: var(--accent);
+    margin-bottom: 18px;
+    transition: border-color .15s var(--ease);
+  }
+  .card:hover .card-icon { border-color: var(--accent); }
+  .card h3 { font-size: 1.05rem; margin-bottom: 8px; }
+  .card p { color: var(--muted); font-size: .92rem; }
+  .card .tag-row { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+  .tag {
+    font-size: .72rem;
+    font-weight: 600;
+    letter-spacing: .03em;
+    padding: 3px 9px;
+    color: var(--muted);
+    border: 1px solid var(--border);
+  }
+  .tag.good { color: var(--accent); border-color: var(--accent-dim); }
+
+  .steps { display: grid; grid-template-columns: repeat(3,1fr); border: 1px solid var(--border); }
+  .steps .step { border-right: 1px solid var(--border); }
+  .steps .step:last-child { border-right: none; }
+  @media (max-width: 760px) {
+    .steps { grid-template-columns: 1fr; }
+    .steps .step { border-right: none; border-bottom: 1px solid var(--border); }
+    .steps .step:last-child { border-bottom: none; }
+  }
+  .step { padding: 26px 24px; }
+  .step .num {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: .95rem;
+    color: var(--bg);
+    background: var(--accent);
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    margin-bottom: 16px;
+  }
+  .step h3 { font-size: 1.02rem; margin-bottom: 8px; }
+  .step p { color: var(--muted); font-size: .92rem; }
+  .step code {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    padding: 1px 6px;
+    font-size: .86em;
+    font-family: ui-monospace, monospace;
+    color: var(--accent);
+  }
+
+  .download-grid { display: grid; grid-template-columns: repeat(4,1fr); border: 1px solid var(--border); }
+  .dl-card:not(:last-child) { border-right: 1px solid var(--border); }
+  @media (max-width: 900px) {
+    .download-grid { grid-template-columns: repeat(2,1fr); }
+    .dl-card:nth-child(2n) { border-right: none; }
+    .dl-card:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+  }
+  @media (max-width: 520px) {
+    .download-grid { grid-template-columns: 1fr; }
+    .dl-card { border-right: none !important; border-bottom: 1px solid var(--border); }
+    .dl-card:last-child { border-bottom: none; }
+  }
+  .dl-card {
+    display: flex;
+    flex-direction: column;
+    padding: 24px;
+    text-decoration: none;
+    color: inherit;
+    transition: background .15s var(--ease);
+  }
+  .dl-card:hover { background: var(--surface); }
+  .dl-card .os-icon {
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    margin-bottom: 16px;
+    transition: color .15s, border-color .15s;
+  }
+  .dl-card:hover .os-icon { color: var(--accent); border-color: var(--accent-dim); }
+  .dl-card h3 { font-size: 1rem; }
+  .dl-card .fmt { color: var(--faint); font-size: .82rem; margin-top: 4px; }
+  .dl-card .go {
+    margin-top: auto;
+    padding-top: 16px;
+    color: var(--accent);
+    font-weight: 600;
+    font-size: .88rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .dl-card .go svg { transition: transform .2s var(--ease); }
+  .dl-card:hover .go svg { transform: translateX(4px); }
+
+  .dl-note {
+    margin-top: 24px;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    border: 1px solid var(--border);
+    padding: 16px 18px;
+    color: var(--muted);
+    font-size: .9rem;
+  }
+  .dl-note svg { flex: 0 0 auto; color: var(--accent); margin-top: 2px; }
+  .dl-note a { color: var(--accent); font-weight: 600; }
+
+  .faq { max-width: 720px; }
+  .faq-item { border-bottom: 1px solid var(--border); }
+  .faq-item:first-child { border-top: 1px solid var(--border); }
+  .faq-q {
+    width: 100%;
+    text-align: start;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text);
+    font-family: var(--font-display);
+    font-size: 1rem;
+    font-weight: 600;
+    padding: 20px 2px;
+  }
+  .faq-q:hover { color: var(--accent); }
+  .faq-q:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .faq-q .chev { color: var(--muted); flex: 0 0 auto; transition: transform .2s var(--ease); }
+  .faq-item.open .faq-q .chev { transform: rotate(180deg); color: var(--accent); }
+  .faq-a { overflow: hidden; height: 0; }
+  .faq-a-inner { padding: 0 2px 20px; color: var(--muted); }
+
+  .final-cta { text-align: center; padding-block: 64px; border: 1px solid var(--border); }
+  .final-cta h2 { font-size: clamp(1.6rem,3.4vw,2.4rem); }
+  .final-cta p { color: var(--muted); margin: 14px auto 0; max-width: 52ch; }
+  .final-cta .cta-row { display: flex; gap: 12px; justify-content: center; margin-top: 28px; flex-wrap: wrap; }
+  .final-cta .tiny { color: var(--faint); font-size: .82rem; margin-top: 18px; }
+
+  footer { border-top: 1px solid var(--border); padding-block: 32px; }
+  .footer-inner { display: flex; align-items: center; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+  .footer-inner .brand { font-size: .95rem; }
+  .footer-links { display: flex; gap: 20px; }
+  .footer-links a { color: var(--muted); text-decoration: none; font-size: .88rem; transition: color .15s; }
+  .footer-links a:hover { color: var(--accent); }
+
+  .reveal { will-change: transform, opacity; }
+  @media (prefers-reduced-motion: reduce) { .sync-path, .packet { animation: none; } }
 </style>
 </head>
 <body>
-<div class="wrap">
 
-<header>
-  <h1>Obsync</h1>
-  <div class="tag">Free, local-first P2P sync for your Obsidian vault. No cloud. No account. No subscription.</div>
-  <div class="badges">
-    <img alt="MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue">
-    <img alt="CI" src="https://github.com/chintu79/obsync/workflows/CI/badge.svg">
+<nav id="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top"><span class="brand-mark">⇄</span> Obsync</a>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#how">How it works</a>
+      <a href="#download">Download</a>
+      <a href="#faq">FAQ</a>
+    </div>
+    <div class="nav-actions">
+      <a class="btn btn-secondary" href="https://github.com/chintu79/obsync" target="_blank" rel="noopener">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+        Star <span class="count hidden" id="starCount">0</span>
+      </a>
+      <a class="btn btn-primary" href="https://github.com/chintu79/obsync/releases/latest">Download</a>
+    </div>
   </div>
-  <div class="cta-row">
-    <a class="btn" href="#download">Download</a>
-    <a class="btn ghost" href="https://github.com/chintu79/obsync">View source on GitHub</a>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <div class="hero-badge reveal"><span class="dot"></span> Free forever &middot; open source</div>
+      <h1 class="hero-title"><span class="word"><span>Your Obsidian vault,</span></span><br><span class="word accent-text"><span>in sync on every device.</span></span></h1>
+      <p class="hero-sub reveal">Obsync keeps your notes between your laptop and phone — directly, encrypted, over your own network. No cloud. No account. No subscription.</p>
+      <div class="hero-cta reveal">
+        <a class="btn btn-primary btn-lg" href="https://github.com/chintu79/obsync/releases/latest">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download for free
+        </a>
+        <a class="btn btn-secondary btn-lg" href="https://github.com/chintu79/obsync" target="_blank" rel="noopener">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+          Star on GitHub <span class="count hidden" id="heroStarCount"></span>
+        </a>
+      </div>
+      <p class="hero-note reveal">MIT OR Apache-2.0 &middot; Android, Windows, macOS &amp; Linux &middot; self-hostable</p>
+    </div>
+    <div class="hero-art reveal" aria-hidden="true">
+      <svg class="scene" viewBox="0 0 520 340" role="img" aria-label="A laptop and phone syncing over a direct connection">
+        <defs>
+          <linearGradient id="dev" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#2b2b2e"/>
+            <stop offset="100%" stop-color="#1e1e21"/>
+          </linearGradient>
+        </defs>
+        <rect x="60" y="180" width="190" height="16" rx="2" fill="url(#dev)"/>
+        <rect x="68" y="104" width="174" height="80" rx="4" fill="url(#dev)"/>
+        <rect x="76" y="112" width="158" height="64" rx="2" fill="#161618" stroke="#2b2b2e"/>
+        <rect x="336" y="66" width="106" height="212" rx="14" fill="url(#dev)"/>
+        <rect x="344" y="74" width="90" height="196" rx="10" fill="#161618" stroke="#2b2b2e"/>
+        <path class="sync-path" d="M 258 150 C 292 108, 298 220, 332 160"/>
+        <path class="sync-path reverse" d="M 332 122 C 292 190, 298 84, 258 128"/>
+        <circle class="packet" r="4" cx="258" cy="150" style="offset-path: path('M 258 150 C 292 108, 298 220, 332 160')"/>
+        <circle class="packet reverse" r="4" cx="332" cy="122" style="offset-path: path('M 332 122 C 292 190, 298 84, 258 128')"/>
+        <rect x="88" y="126" width="118" height="8" rx="2" fill="#d9ff5b" opacity=".55"/>
+        <rect x="88" y="142" width="88" height="6" rx="2" fill="#93938f" opacity=".4"/>
+        <rect x="88" y="154" width="100" height="6" rx="2" fill="#93938f" opacity=".4"/>
+        <rect x="88" y="166" width="68" height="6" rx="2" fill="#93938f" opacity=".3"/>
+        <g transform="translate(368 100)">
+          <rect width="38" height="38" fill="#0e0e10"/>
+          <rect x="6" y="6" width="8" height="8" fill="#f2f2f0"/>
+          <rect x="24" y="6" width="8" height="8" fill="#f2f2f0"/>
+          <rect x="6" y="24" width="8" height="8" fill="#f2f2f0"/>
+          <rect x="18" y="14" width="5" height="5" fill="#93938f"/>
+          <rect x="14" y="24" width="6" height="6" fill="#93938f"/>
+        </g>
+        <rect x="356" y="156" width="64" height="6" rx="2" fill="#93938f" opacity=".4"/>
+        <rect x="356" y="168" width="52" height="6" rx="2" fill="#93938f" opacity=".4"/>
+      </svg>
+      <div class="art-caption">
+        <span>laptop ⇄ phone, direct</span>
+        <span class="live"><span class="dot"></span>encrypted</span>
+      </div>
+    </div>
   </div>
 </header>
 
-<h2>Why Obsync?</h2>
-<p>
-  Obsidian Sync costs $4/month and routes your notes through a third-party
-  cloud. Obsync keeps your vault on your own devices — your laptop and your
-  phone talk directly over your network, encrypted, with no account and no
-  subscription. It's free forever, and you can self-host it anywhere.
-</p>
-
-<div class="grid">
-  <div class="card"><h3>No cloud</h3><p>Devices sync directly over your home Wi-Fi or hotspot.</p></div>
-  <div class="card"><h3>Private</h3><p>Your notes never leave your devices. Pairing is fingerprint-verified.</p></div>
-  <div class="card"><h3>Free forever</h3><p>Open source under MIT / Apache-2.0. No paywall, ever.</p></div>
-  <div class="card"><h3>Safe</h3><p>Conflicts are flagged, not clobbered. Snapshots let you roll back.</p></div>
-</div>
-
-<h2>How it works</h2>
-<div class="steps">
-  <div class="step"><div><b>Install the app on your laptop.</b><br>Run the installer — it starts Obsync automatically and opens the dashboard.</div></div>
-  <div class="step"><div><b>Install the app on your phone.</b><br>Download the APK and open it.</div></div>
-  <div class="step"><div><b>Scan the QR code.</b><br>Your phone scans the code shown on the laptop's dashboard.</div></div>
-  <div class="step"><div><b>Approve and done.</b><br>Tap approve on the laptop. Your vaults stay in sync automatically.</div></div>
-</div>
-
-<h2 id="download">Download</h2>
-<div class="grid">
-  <div class="card">
-    <h3>Windows</h3>
-    <p>Installer — double-click to install.</p>
-    <a class="btn" href="https://github.com/chintu79/obsync/releases/latest">Get for Windows</a>
+<section class="section" style="border-top:none; padding-top:0;">
+  <div class="wrap">
+    <div class="stats reveal">
+      <div class="stat"><h3><span class="num" data-target="0">$0</span><span class="suffix"> forever</span></h3><p>No subscription, no paywall</p></div>
+      <div class="stat"><h3><span class="num" data-target="100">100</span><span class="suffix">%</span></h3><p>Local-first — your vault stays on disk</p></div>
+      <div class="stat"><h3><span class="num" data-target="0">0</span> <span class="suffix">clouds</span></h3><p>Your notes never touch a server</p></div>
+      <div class="stat"><h3><span class="num" data-target="2">2</span><span class="suffix"> licenses</span></h3><p>MIT OR Apache-2.0, your choice</p></div>
+    </div>
   </div>
-  <div class="card">
-    <h3>macOS</h3>
-    <p>Disk image — drag to Applications.</p>
-    <a class="btn" href="https://github.com/chintu79/obsync/releases/latest">Get for macOS</a>
-  </div>
-  <div class="card">
-    <h3>Linux</h3>
-    <p>AppImage / .deb installer.</p>
-    <a class="btn" href="https://github.com/chintu79/obsync/releases/latest">Get for Linux</a>
-  </div>
-  <div class="card">
-    <h3>Android</h3>
-    <p>APK — install directly on your phone.</p>
-    <a class="btn" href="https://github.com/chintu79/obsync/releases/latest">Get APK</a>
-  </div>
-</div>
-<p class="note">
-  Everything is attached to the <a href="https://github.com/chintu79/obsync/releases/latest">latest release</a>.
-  On Android, allow "Install unknown apps" when prompted. On macOS, right-click the app and choose
-  <b>Open</b> the first time (the app is free and unsigned).
-</p>
+</section>
 
-<h2>FAQ</h2>
-<div class="faq">
-  <p><b>Does this need a server or subscription?</b> No. Everything runs on your own devices, on your own network.</p>
-  <p><b>Is my data sent anywhere?</b> No. Your notes only travel between your laptop and your phone, encrypted.</p>
-  <p><b>What if I edit the same note on both devices?</b> Obsync flags it as a conflict and lets you choose which version to keep.</p>
-  <p><b>Can I sync more than a laptop + phone?</b> The server can run on a NAS or Raspberry Pi to serve many devices.</p>
-</div>
+<section class="section" id="features">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div class="eyebrow">Why Obsync</div>
+      <h2>The privacy of self-hosted, with the ease of a single tap</h2>
+      <p>Obsidian Sync costs $4 a month and routes your notes through a third-party cloud. Obsync does the job between your own devices — encrypted, automatic, and free.</p>
+    </div>
+    <div class="features reveal">
+      <div class="card">
+        <div class="card-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg></div>
+        <h3>No cloud, no account</h3>
+        <p>Your laptop and phone talk directly over your Wi-Fi or hotspot. There is no account to create and nothing to sign in to.</p>
+        <div class="tag-row"><span class="tag good">private</span><span class="tag">0 accounts</span></div>
+      </div>
+      <div class="card">
+        <div class="card-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+        <h3>End-to-end encrypted</h3>
+        <p>Every file is encrypted on the wire with X25519 key exchange and AES-256-GCM. Pairing is verified by fingerprint, not by trust.</p>
+        <div class="tag-row"><span class="tag good">AES-256</span><span class="tag">X25519</span></div>
+      </div>
+      <div class="card">
+        <div class="card-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><rect x="7" y="7" width="4" height="4"/><rect x="13" y="7" width="4" height="4"/><rect x="7" y="13" width="4" height="4"/><rect x="13" y="13" width="4" height="4"/></svg></div>
+        <h3>Scan-to-pair</h3>
+        <p>Your phone scans a QR code on the dashboard, you tap approve, and the two devices are connected. That's the whole setup.</p>
+        <div class="tag-row"><span class="tag good">QR code</span><span class="tag">1 tap</span></div>
+      </div>
+      <div class="card">
+        <div class="card-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div>
+        <h3>Conflicts, never lost notes</h3>
+        <p>Edit the same note on both devices? Obsync flags the conflict and lets you choose — it never silently overwrites your work.</p>
+        <div class="tag-row"><span class="tag good">conflict-safe</span><span class="tag">keep both</span></div>
+      </div>
+      <div class="card">
+        <div class="card-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></div>
+        <h3>Snapshot versioning</h3>
+        <p>Every edit is snapshotted on the server side. Roll a file back to any earlier version straight from the dashboard.</p>
+        <div class="tag-row"><span class="tag good">rollback</span><span class="tag">history</span></div>
+      </div>
+      <div class="card">
+        <div class="card-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></div>
+        <h3>Live dashboard</h3>
+        <p>See file counts, sync activity, and online/offline devices in real time — served right from your laptop, updated over SSE.</p>
+        <div class="tag-row"><span class="tag good">live</span><span class="tag">self-host</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="how">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div class="eyebrow">How it works</div>
+      <h2>From zero to synced in about a minute</h2>
+      <p>No router config, no port forwarding, no terminal required. Both devices just need to reach each other on your network.</p>
+    </div>
+    <div class="steps reveal">
+      <div class="step">
+        <div class="num">1</div>
+        <h3>Run Obsync on your laptop</h3>
+        <p>Install the desktop app (or run <code>./run-server.sh</code>). It starts itself and opens a dashboard at <code>localhost:42021</code>.</p>
+      </div>
+      <div class="step">
+        <div class="num">2</div>
+        <h3>Install the Android app</h3>
+        <p>Grab the APK from the release page and open it on your phone. It pairs over your Wi-Fi or your phone's hotspot.</p>
+      </div>
+      <div class="step">
+        <div class="num">3</div>
+        <h3>Scan the QR code</h3>
+        <p>Point your phone at the code on the dashboard, tap <b>approve</b>, and pick your vault. From then on, both sides stay in sync automatically.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="download">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div class="eyebrow">Download</div>
+      <h2>Free for every platform</h2>
+      <p>Pick the desktop installer for your computer and the APK for your phone. Everything is attached to the latest release.</p>
+    </div>
+    <div class="download-grid reveal">
+      <a class="dl-card" href="https://github.com/chintu79/obsync/releases/latest" target="_blank" rel="noopener">
+        <div class="os-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.55 10.8 4.5v7.2H3V5.55Zm9.3-.99L21 3v8.7h-8.7V4.56ZM3 12.3h7.8v7.2L3 18.5v-6.2Zm9.3 0H21V21l-8.7-1.2v-7.5Z"/></svg></div>
+        <h3>Windows</h3>
+        <p class="fmt">.exe installer</p>
+        <span class="go">Get it <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+      </a>
+      <a class="dl-card" href="https://github.com/chintu79/obsync/releases/latest" target="_blank" rel="noopener">
+        <div class="os-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M16.37 12.86c-.01-2.11 1.72-3.12 1.8-3.17-.98-1.44-2.51-1.63-3.06-1.66-1.3-.13-2.54.77-3.2.77-.66 0-1.68-.75-2.77-.73-1.42.02-2.74.83-3.47 2.1-1.48 2.57-.38 6.37 1.06 8.45.7 1.02 1.54 2.16 2.64 2.12 1.06-.04 1.46-.68 2.74-.68 1.28 0 1.64.68 2.76.66 1.14-.02 1.86-1.04 2.56-2.06.81-1.18 1.14-2.33 1.16-2.39-.02-.01-2.22-.85-2.22-3.21ZM14.18 6.72c.58-.7.97-1.68.87-2.66-.84.03-1.85.56-2.45 1.27-.54.63-1.01 1.64-.88 2.6.93.07 1.88-.47 2.46-1.21Z"/></svg></div>
+        <h3>macOS</h3>
+        <p class="fmt">.dmg · Intel &amp; Apple Silicon</p>
+        <span class="go">Get it <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+      </a>
+      <a class="dl-card" href="https://github.com/chintu79/obsync/releases/latest" target="_blank" rel="noopener">
+        <div class="os-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 18v3"/></svg></div>
+        <h3>Linux</h3>
+        <p class="fmt">AppImage / .deb</p>
+        <span class="go">Get it <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+      </a>
+      <a class="dl-card" href="https://github.com/chintu79/obsync/releases/latest" target="_blank" rel="noopener">
+        <div class="os-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="3"/><path d="M12 18h.01"/><path d="M9 5h6"/></svg></div>
+        <h3>Android</h3>
+        <p class="fmt">APK — sideload &amp; enjoy</p>
+        <span class="go">Get it <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
+      </a>
+    </div>
+    <div class="dl-note reveal">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      <div>On Android, allow <b>"Install unknown apps"</b> when prompted. On macOS, right-click and choose <b>Open</b> the first time — the app is free and unsigned. Prefer a plain server binary? The <a href="https://github.com/chintu79/obsync/releases/latest" target="_blank" rel="noopener">latest release</a> also ships headless <code>obsync-server-*</code> binaries.</div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="faq">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div class="eyebrow">FAQ</div>
+      <h2>Questions, answered</h2>
+    </div>
+    <div class="faq reveal">
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">Does this need a server or a subscription?
+          <svg class="chev" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+        <div class="faq-a" aria-hidden="true">
+          <div class="faq-a-inner">No. Everything runs on your own devices, on your own network. There is no server to rent, no account to create, and no subscription — ever.</div>
+        </div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">Is my data sent anywhere?
+          <svg class="chev" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+        <div class="faq-a" aria-hidden="true">
+          <div class="faq-a-inner">Your notes only travel between your own laptop and phone, encrypted end-to-end. They never pass through a third-party server, and they're encrypted with AES-256-GCM in transit.</div>
+        </div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">What if I edit the same note on both devices?
+          <svg class="chev" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+        <div class="faq-a" aria-hidden="true">
+          <div class="faq-a-inner">Obsync detects the divergence and flags it as a conflict on the dashboard. You choose which version to keep — local, remote, or both. Nothing is silently overwritten.</div>
+        </div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">Can I sync more than one phone?
+          <svg class="chev" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+        <div class="faq-a" aria-hidden="true">
+          <div class="faq-a-inner">Yes. The dashboard can approve multiple devices, and the server side runs fine on a NAS or a Raspberry Pi to serve your whole family. Self-host it anywhere on your network.</div>
+        </div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-q" aria-expanded="false">Is it really free forever?
+          <svg class="chev" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+        <div class="faq-a" aria-hidden="true">
+          <div class="faq-a-inner">Yes — Obsync is open source under MIT OR Apache-2.0. No paywall, no premium tier, no usage caps. If it saves you $4 a month, a star on GitHub is all we ask.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <div class="final-cta reveal">
+      <h2>Your vault. Your devices. <span class="accent-text">Your notes.</span></h2>
+      <p>Stop paying for your own data. Download Obsync, scan a QR code, and watch your vault stay in sync — privately, forever.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary btn-lg" href="https://github.com/chintu79/obsync/releases/latest">Download Obsync</a>
+        <a class="btn btn-secondary btn-lg" href="https://github.com/chintu79/obsync" target="_blank" rel="noopener">Star on GitHub <span class="count hidden" id="finalStarCount"></span></a>
+      </div>
+      <p class="tiny">Built with open source in Rust &middot; MIT OR Apache-2.0 &middot; Your stars keep this free</p>
+    </div>
+  </div>
+</section>
 
 <footer>
-  Built with <a href="https://github.com/chintu79/obsync">open source</a> in Rust · MIT / Apache-2.0 · Powered by the community.
+  <div class="wrap footer-inner">
+    <a class="brand" href="#top"><span class="brand-mark">⇄</span> Obsync</a>
+    <div class="footer-links">
+      <a href="https://github.com/chintu79/obsync" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/chintu79/obsync/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/chintu79/obsync/issues" target="_blank" rel="noopener">Issues</a>
+      <a href="https://github.com/sponsors/chintu79" target="_blank" rel="noopener">Sponsor</a>
+    </div>
+  </div>
 </footer>
 
-</div>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
+<script>
+(function () {
+  "use strict";
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var gsapReady = typeof gsap !== "undefined" && typeof ScrollTrigger !== "undefined";
+
+  var counts = [
+    document.getElementById("starCount"),
+    document.getElementById("heroStarCount"),
+    document.getElementById("finalStarCount"),
+  ];
+  fetch("https://api.github.com/repos/chintu79/obsync", { headers: { Accept: "application/vnd.github+json" } })
+    .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+    .then(function (data) {
+      if (typeof data.stargazers_count === "number") {
+        counts.forEach(function (el) {
+          if (!el) return;
+          el.textContent = data.stargazers_count;
+          el.classList.remove("hidden");
+        });
+      }
+    })
+    .catch(function () {});
+
+  document.querySelectorAll(".faq-item").forEach(function (item) {
+    var btn = item.querySelector(".faq-q");
+    var panel = item.querySelector(".faq-a");
+    btn.addEventListener("click", function () {
+      var open = item.classList.contains("open");
+      document.querySelectorAll(".faq-item.open").forEach(function (other) {
+        other.classList.remove("open");
+        other.querySelector(".faq-q").setAttribute("aria-expanded", "false");
+        other.querySelector(".faq-a").setAttribute("aria-hidden", "true");
+        gsapReady
+          ? gsap.to(other.querySelector(".faq-a"), { height: 0, duration: .25, ease: "power2.inOut" })
+          : (other.querySelector(".faq-a").style.height = "0px");
+      });
+      if (!open) {
+        item.classList.add("open");
+        btn.setAttribute("aria-expanded", "true");
+        panel.setAttribute("aria-hidden", "false");
+        gsapReady
+          ? gsap.to(panel, { height: panel.scrollHeight, duration: .3, ease: "power2.inOut" })
+          : (panel.style.height = panel.scrollHeight + "px");
+      }
+    });
+  });
+
+  if (!gsapReady) return;
+  gsap.registerPlugin(ScrollTrigger);
+
+  if (!reduced) {
+    gsap.set(".hero-title .word span", { yPercent: 105 });
+    gsap.to(".hero-title .word span", { yPercent: 0, duration: .7, ease: "power3.out", stagger: .08, delay: .1 });
+
+    gsap.utils.toArray(".reveal").forEach(function (el) {
+      gsap.fromTo(el, { opacity: 0, y: 20 }, {
+        opacity: 1, y: 0, duration: .6, ease: "power2.out",
+        scrollTrigger: { trigger: el, start: "top 88%", once: true },
+      });
+    });
+
+    gsap.utils.toArray(".stat .num").forEach(function (num) {
+      var target = parseInt(num.getAttribute("data-target"), 10);
+      if (!isFinite(target) || target <= 0) return;
+      var obj = { v: 0 };
+      gsap.to(obj, {
+        v: target, duration: 1, ease: "power1.out",
+        scrollTrigger: { trigger: num, start: "top 90%", once: true },
+        onUpdate: function () { num.textContent = Math.round(obj.v); },
+      });
+    });
+  }
+})();
+</script>
 </body>
 </html>

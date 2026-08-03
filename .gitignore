@@ -18,6 +18,9 @@
 /desktop/src-tauri/target/
 /desktop/src-tauri/gen/
 
+# Obsidian plugin — lives in its own repo (chintu79/obsync-plugin)
+/plugin/
+
 # Local runtime data
 *.obsync/
 .vault/

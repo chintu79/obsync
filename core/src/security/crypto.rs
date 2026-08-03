@@ -81,4 +81,21 @@ mod tests {
         // Nonces should differ
         assert_ne!(a, b);
     }
+
+    /// Cross-language conformance: the TS plugin's crypto.test.ts asserts the
+    /// same known-answer tag (GCM spec Appendix B, empty PT) via
+    /// `@noble/ciphers/aes`. If either implementation stops producing this tag
+    /// the two languages have diverged on AES-256-GCM.
+    #[test]
+    fn test_gcm_known_answer_matches_plugin() {
+        use aes_gcm::aead::{AeadInPlace, KeyInit as _};
+        let key = [0u8; 32];
+        let nonce = [0u8; 12];
+        let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
+        let mut buffer = Vec::new();
+        cipher
+            .encrypt_in_place(Nonce::from_slice(&nonce), b"", &mut buffer)
+            .unwrap();
+        assert_eq!(hex::encode(&buffer), "530f8afbc74536b9a963b4f1c4cb738b");
+    }
 }

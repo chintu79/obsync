@@ -14,6 +14,12 @@ server.
 
 </div>
 
+> **New:** Obsync is now an **Obsidian plugin** — install it from the
+> community catalog and sync your vault between desktop and mobile without any
+> separate apps. See the [obsync-plugin](https://github.com/chintu79/obsync-plugin)
+> repo. The Rust core, dashboard, and Android app below remain the
+> self-hosted/NAS path.
+
 ---
 
 ## Why Obsync?

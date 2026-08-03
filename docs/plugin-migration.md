@@ -1,7 +1,9 @@
 # Obsync → Obsidian Plugin: Migration Plan
 
-Status: proposal · Target: replace the Tauri desktop app + Android APK with a
-single Obsidian plugin that runs on both desktop and mobile.
+Status: shipped · The plugin now lives in its own repo
+(`chintu79/obsync-plugin`, tagged `1.0.0`); this document records how the
+port was done and what remains (community-catalog submission + live-phone
+verification).
 
 ## 1. Goal and scope
 
@@ -158,8 +160,67 @@ settings-tab DOM, matching the existing no-build webui style.
 | **2. Store + scanner** | `store.ts` on the vault adapter, `scanner.ts` over `vault.getFiles()`, `hash.ts` (blake3) | indexing a sample vault matches Rust's manifest hashes |
 | **3. Crypto + transport** | `crypto/identity/protocol/transport` + wire AES-GCM session | TS client↔server in-process round-trip test; crypto vectors match Rust |
 | **4. Engine + desktop UI** | `engine.ts`, `session.ts` server side, settings tab (pair, approve, conflicts, restore) | desktop-only sync test: create/edit/delete propagate both ways |
-| **5. Mobile client** | same `core/`, `requestUrl` transport; real phone | live laptop⇄phone sync + forced-conflict test |
+| **5. Mobile client** | `RequestUrlTransport` + hello/pairing gate; real phone | live laptop⇄phone sync + forced-conflict test |
 | **6. Replace artifacts** | drop Tauri + APK from `release.yml`, update landing page/README, submit to `obsidian-releases` | fresh user pairs and syncs from the plugin catalog |
+
+### Phase 5 status (in progress)
+
+- `core/transport.ts` now has `RequestUrlTransport` — the mobile path. It
+  mirrors `HttpClientTransport` but posts through Obsidian's `requestUrl`
+  (the only network primitive Capacitor exposes), with the same JSON wire
+  format + timeout. It is exercised in tests by a `requestUrl`-shaped fetch
+  wrapper so the mobile code path runs under vitest.
+- `core/session.ts` gained the **hello handshake** that the Rust protocol
+  always had but the HTTP port skipped: `runClientSession` now sends a
+  `hello` (device_id/device_name/fingerprint) first and aborts unless the
+  server answers `hello_ack{approved:true}`. This is the single decision
+  point for approvals.
+- `core/pairing.ts` — `PairingServer` wraps a `SyncServer`, gates
+  `hello`/`pair_request` on `.obsync/approved.json` (persisted, survives
+  restart), and answers with the desktop's identity + X25519 public key.
+  `PairingClient` builds the mobile `pair_request`. `SyncServer` alone stays
+  approval-open so engine/session tests don't need a pairing layer.
+- `main.ts` is now mobile-aware via `Platform.isMobile`: desktop starts the
+  RPC server + `PairingServer`; mobile does `pair_request` → `refreshIndex(false)`
+  → `runClientSession` against the configured `serverUrl`.
+- **Not yet done:** the live phone-over-hotspot verification. In-process,
+  desktop-server + `requestUrl`-shaped client round-trips fully
+  (81 vitest tests green). To verify on hardware:
+
+  1. Build the plugin (`npm run build`), install `main.js`/`manifest.json`/
+     `styles.css` into both the laptop vault's `.obsidian/plugins/obsync/`
+     and the phone's vault (via the phone's Obsidian → Settings → Community
+     plugins, or copy over the hotspot).
+  2. On the laptop: Obsidian Settings → Obsync → **Start server**; note the
+     fingerprint.
+  3. On the phone: Settings → Obsync → set `serverUrl` to
+     `http://<laptop-hotspot-ip>:42042`; tap **Sync now**.
+  4. The desktop must approve the phone (PairingServer prompts via the
+     settings tab); the phone then pulls/pushes.
+  5. Forced conflict test: edit the same note on both sides → the phone shows
+     a conflict copy (`<name>.sync-conflict-<ts>.md`), not a data loss.
+
+### Phase 6 status (shipped)
+
+- The plugin moved to its own repo: **`chintu79/obsync-plugin`** (created
+  `Aug 2026`). Obsidian's directory reads `manifest.json` at the default-branch
+  repo root, so it cannot live nested under `plugin/`. New repo contains
+  `manifest.json`, `main.js`, `styles.css`, `versions.json`, `README.md`,
+  `LICENSE` (MIT) + `LICENSE-APACHE`, and a release workflow.
+- Manifest is submission-ready: `id: "obsync"` (unique, no "obsidian"),
+  `version: 1.0.0`, `isDesktopOnly: false`, `minAppVersion: 1.5.0`.
+- Release workflow builds `main.js` on tag push and attaches
+  `main.js` + `manifest.json` + `styles.css` (the tag must match
+  `manifest.json` exactly, no `v` prefix). Tag `1.0.0` is live with all three
+  assets.
+- Dev deps bumped to vitest 4 / esbuild 0.28 — `npm audit` reports
+  **0 vulnerabilities** (the older vitest had a critical).
+- The current repo (`chintu79/obsync`) keeps Rust `core/`, `httpd`, `cli`,
+  `android/`, `desktop/` as the self-hosted/NAS path; landing page now leads
+  with the plugin.
+- **Remaining (manual):** submit at community.obsidian.md (web dashboard +
+  release workflow, not a GitHub PR), and run the live laptop⇄phone
+  verification from Phase 5 before announcing.
 
 ## 10. Conformance strategy
 

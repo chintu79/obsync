@@ -307,7 +307,10 @@ pub extern "system" fn Java_com_obsync_bridge_RustBridge_syncOnce<'local>(
 
         let mut engine = SyncEngine::new(vault_path, device_id.clone()).await?;
         engine.refresh_index(false).await?;
-        let report = crate::sync::peer::run_client_session(&mut engine, &peer).await?;
+        // Phase 1: the phone syncs whatever the server allows. A per-device
+        // local scope (what THIS device wants to keep) arrives via JNI later.
+        let scope = crate::sync::scope::Scope::everything();
+        let report = crate::sync::peer::run_client_session(&mut engine, &peer, &scope).await?;
         Ok::<_, anyhow::Error>(serde_json::json!({
             "pulled": report.pulled_files,
             "pushed": report.pushed_files,

@@ -5,6 +5,7 @@ use rusqlite::{params, Connection, Result as SqlResult};
 use crate::conflict::record::ConflictEntry;
 use crate::filesystem::Blake3Hash;
 use crate::index::state::{FileState, SyncState, Tombstone};
+use crate::sync::scope::{ScopeEntry, ScopeKind};
 
 pub struct Store {
     conn: Connection,
@@ -65,6 +66,23 @@ impl Store {
             CREATE TABLE IF NOT EXISTS config (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS shared_scope (
+                path TEXT PRIMARY KEY,
+                kind INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS device_scopes (
+                fingerprint TEXT NOT NULL,
+                path TEXT NOT NULL,
+                kind INTEGER NOT NULL,
+                PRIMARY KEY (fingerprint, path)
+            );
+
+            CREATE TABLE IF NOT EXISTS device_flags (
+                fingerprint TEXT PRIMARY KEY,
+                read_only INTEGER NOT NULL DEFAULT 0
             );
             ",
         )?;
@@ -243,6 +261,101 @@ impl Store {
         }
     }
 
+    // Sync scopes
+
+    fn scope_kind_to_i32(kind: &ScopeKind) -> i32 {
+        match kind {
+            ScopeKind::File => 0,
+            ScopeKind::Folder => 1,
+        }
+    }
+
+    fn scope_kind_from_i32(v: i32) -> ScopeKind {
+        match v {
+            0 => ScopeKind::File,
+            _ => ScopeKind::Folder,
+        }
+    }
+
+    /// Paths in the vault-wide "shared" selection (synced to every approved
+    /// device). Empty when nothing is shared yet.
+    pub fn get_shared_scope(&self) -> SqlResult<Vec<ScopeEntry>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, kind FROM shared_scope ORDER BY path")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ScopeEntry {
+                path: row.get(0)?,
+                kind: Self::scope_kind_from_i32(row.get(1)?),
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Replace the whole shared selection.
+    pub fn set_shared_scope(&self, entries: &[ScopeEntry]) -> SqlResult<()> {
+        self.conn.execute("DELETE FROM shared_scope", [])?;
+        for e in entries {
+            self.conn.execute(
+                "INSERT OR REPLACE INTO shared_scope (path, kind) VALUES (?1, ?2)",
+                params![e.path, Self::scope_kind_to_i32(&e.kind)],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Extra paths a specific approved device subscribes to, on top of the
+    /// shared selection.
+    pub fn get_device_scope(&self, fingerprint: &str) -> SqlResult<Vec<ScopeEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT path, kind FROM device_scopes WHERE fingerprint = ?1 ORDER BY path",
+        )?;
+        let rows = stmt.query_map(params![fingerprint], |row| {
+            Ok(ScopeEntry {
+                path: row.get(0)?,
+                kind: Self::scope_kind_from_i32(row.get(1)?),
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Replace a device's optional scope. Empty = shared selection only.
+    pub fn set_device_scope(&self, fingerprint: &str, entries: &[ScopeEntry]) -> SqlResult<()> {
+        self.conn.execute(
+            "DELETE FROM device_scopes WHERE fingerprint = ?1",
+            params![fingerprint],
+        )?;
+        for e in entries {
+            self.conn.execute(
+                "INSERT OR REPLACE INTO device_scopes (fingerprint, path, kind) VALUES (?1, ?2, ?3)",
+                params![fingerprint, e.path, Self::scope_kind_to_i32(&e.kind)],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Whether a device is read-only: it may pull but never push/delete.
+    pub fn get_device_read_only(&self, fingerprint: &str) -> SqlResult<bool> {
+        use rusqlite::OptionalExtension;
+        let ro: Option<i32> = self
+            .conn
+            .query_row(
+                "SELECT read_only FROM device_flags WHERE fingerprint = ?1",
+                params![fingerprint],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(ro.map(|v| v != 0).unwrap_or(false))
+    }
+
+    pub fn set_device_read_only(&self, fingerprint: &str, read_only: bool) -> SqlResult<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO device_flags (fingerprint, read_only) VALUES (?1, ?2)",
+            params![fingerprint, i32::from(read_only)],
+        )?;
+        Ok(())
+    }
+
     /// Record a conflict for `relative_path`, replacing any previous
     /// unresolved entry for the same path.
     pub fn record_conflict(
@@ -312,6 +425,7 @@ fn blake_from_vec(bytes: Vec<u8>) -> Blake3Hash {
 mod tests {
     use super::*;
     use crate::filesystem::Blake3Hash;
+    use crate::sync::scope::{ScopeEntry, ScopeKind};
     use std::path::PathBuf;
 
     fn test_hash() -> Blake3Hash {
@@ -376,5 +490,65 @@ mod tests {
             Some("/test/path".into())
         );
         assert_eq!(store.get_config("nonexistent").unwrap(), None);
+    }
+
+    #[test]
+    fn test_shared_scope_roundtrip_and_replace() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.get_shared_scope().unwrap().is_empty());
+
+        let entries = vec![
+            ScopeEntry {
+                kind: ScopeKind::Folder,
+                path: "notes".into(),
+            },
+            ScopeEntry {
+                kind: ScopeKind::File,
+                path: "todo.md".into(),
+            },
+        ];
+        store.set_shared_scope(&entries).unwrap();
+        assert_eq!(store.get_shared_scope().unwrap(), entries);
+
+        store.set_shared_scope(&[]).unwrap();
+        assert!(store.get_shared_scope().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_device_scope_is_per_fingerprint() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .set_device_scope(
+                "fp-a",
+                &[ScopeEntry {
+                    kind: ScopeKind::Folder,
+                    path: "family".into(),
+                }],
+            )
+            .unwrap();
+        store
+            .set_device_scope(
+                "fp-b",
+                &[ScopeEntry {
+                    kind: ScopeKind::File,
+                    path: "secret.md".into(),
+                }],
+            )
+            .unwrap();
+
+        assert_eq!(store.get_device_scope("fp-a").unwrap().len(), 1);
+        assert_eq!(store.get_device_scope("fp-a").unwrap()[0].path, "family");
+        assert_eq!(store.get_device_scope("fp-b").unwrap()[0].path, "secret.md");
+        assert!(store.get_device_scope("fp-c").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_device_read_only_flag() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(!store.get_device_read_only("fp-a").unwrap());
+        store.set_device_read_only("fp-a", true).unwrap();
+        assert!(store.get_device_read_only("fp-a").unwrap());
+        store.set_device_read_only("fp-a", false).unwrap();
+        assert!(!store.get_device_read_only("fp-a").unwrap());
     }
 }

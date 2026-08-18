@@ -15,6 +15,7 @@ use crate::network::protocol::{
 };
 use crate::sync::delta::SyncOperation;
 use crate::sync::engine::SyncEngine;
+use crate::sync::scope::Scope;
 
 const CHUNK_SIZE: usize = 65536;
 
@@ -27,15 +28,18 @@ pub struct SyncReport {
 }
 
 /// Client-driven sync session. The caller (phone) connects to a laptop server,
-/// exchanges manifests, then pulls files it lacks and pushes files the server lacks.
+/// exchanges manifests, then pulls files it lacks and pushes files the server
+/// lacks. `scope` is what THIS side wants to keep: out-of-scope paths are
+/// never advertised, pulled, pushed, or deleted.
 pub async fn run_client_session(
     engine: &mut SyncEngine,
     peer: &PeerConnection,
+    scope: &Scope,
 ) -> Result<SyncReport, anyhow::Error> {
     info!("Starting client sync session");
 
     // 1. Exchange manifests
-    let local = engine.build_manifest();
+    let local = engine.build_manifest_scoped(scope);
     let local_json = serde_json::to_vec(&local)?;
     peer.send_message(&ProtocolMessage::new(MessageType::Manifest, 1, local_json))
         .await?;
@@ -66,6 +70,11 @@ pub async fn run_client_session(
 
     // 3. Pull: files on server that we don't have (or differ, server newer)
     for (path, rf) in &remote_map {
+        if !scope.allows(path) {
+            // The server's manifest is already filtered by the device scope,
+            // but a narrower local scope must never pull either.
+            continue;
+        }
         match local_map.get(path) {
             None => {
                 if local_tombstones.contains(path) {
@@ -131,6 +140,9 @@ pub async fn run_client_session(
 
     // 5. Deletes: remote tombstones → delete locally
     for path in &remote_tombstones {
+        if !scope.allows(path) {
+            continue;
+        }
         if local_map.contains_key(path) {
             debug!("Deleting local {:?} (tombstoned by server)", path);
             engine
@@ -178,10 +190,14 @@ pub async fn run_client_session(
     Ok(report)
 }
 
-/// Server-side sync session. The caller (laptop) accepts a connection and runs this.
+/// Server-side sync session. The caller (laptop) accepts a connection and runs
+/// this. `scope` is what the connecting device may see and sync (its effective
+/// scope); `read_only` additionally rejects pushes and deletes from the peer.
 pub async fn run_server_session(
     engine: &mut SyncEngine,
     peer: &PeerConnection,
+    scope: &Scope,
+    read_only: bool,
 ) -> Result<SyncReport, anyhow::Error> {
     info!("Starting server sync session");
 
@@ -192,8 +208,8 @@ pub async fn run_server_session(
     }
     let _client_manifest: Manifest = serde_json::from_slice(&msg.payload)?;
 
-    // 2. Send our manifest
-    let local = engine.build_manifest();
+    // 2. Send our manifest — only what the peer's scope allows
+    let local = engine.build_manifest_scoped(scope);
     peer.send_message(&ProtocolMessage::new(
         MessageType::Manifest,
         1,
@@ -213,12 +229,12 @@ pub async fn run_server_session(
         match msg.message_type {
             MessageType::FileRequest => {
                 let req: FileRequestPayload = bincode::deserialize(&msg.payload)?;
-                serve_file(engine, peer, &req.relative_path, &req.content_hash).await?;
+                serve_file(engine, peer, &req.relative_path, &req.content_hash, scope).await?;
                 report.pushed_files += 1;
             }
             MessageType::SyncOperation => {
                 let op: SyncOperationPayload = bincode::deserialize(&msg.payload)?;
-                handle_server_operation(engine, peer, &op).await?;
+                handle_server_operation(engine, peer, &op, scope, read_only).await?;
                 match op.operation_type {
                     2 => report.deleted_files += 1,
                     _ => report.pulled_files += 1,
@@ -323,8 +339,18 @@ async fn serve_file(
     peer: &PeerConnection,
     relative_path: &str,
     _expected_hash: &Blake3Hash,
+    scope: &Scope,
 ) -> Result<(), anyhow::Error> {
     let path = Path::new(relative_path);
+    if !scope.allows(path) {
+        // A scoped client can only request files the server already advertised
+        // in its (filtered) manifest — anything else is a bug or a hostile
+        // peer. Aborting the session is the safe response.
+        warn!("Rejecting out-of-scope file request: {}", relative_path);
+        return Err(anyhow::anyhow!(
+            "out-of-scope file request: {relative_path}"
+        ));
+    }
     let src = engine.vault_path().join(path);
     send_file_data(peer, path, &src).await?;
     Ok(())
@@ -334,10 +360,24 @@ async fn handle_server_operation(
     engine: &mut SyncEngine,
     peer: &PeerConnection,
     op: &SyncOperationPayload,
+    scope: &Scope,
+    read_only: bool,
 ) -> Result<(), anyhow::Error> {
     let path = PathBuf::from(&op.relative_path);
+    let allowed = scope.allows(&path) && !read_only;
     match op.operation_type {
         0 | 1 => {
+            if !allowed {
+                // The client already pushed the content behind this op — drain
+                // the chunks so the protocol framing stays in sync, then skip.
+                warn!(
+                    "Skipping {} push of {} (out of scope or read-only device)",
+                    if read_only { "read-only" } else { "out-of-scope" },
+                    op.relative_path
+                );
+                drain_file_data(peer).await?;
+                return Ok(());
+            }
             // create/update: receive file data
             let original_dest = engine.vault_path().join(&path);
             // Guard against clobbering unsynced local edits: write the remote
@@ -375,6 +415,14 @@ async fn handle_server_operation(
             debug!("Server received {:?}", path);
         }
         2 => {
+            if !allowed {
+                warn!(
+                    "Skipping {} delete of {}",
+                    if read_only { "read-only" } else { "out-of-scope" },
+                    op.relative_path
+                );
+                return Ok(());
+            }
             engine
                 .apply_operation(&SyncOperation::Delete { path })
                 .await?;
@@ -382,6 +430,26 @@ async fn handle_server_operation(
                 .await?;
         }
         _ => {}
+    }
+    Ok(())
+}
+
+/// Consume the file chunks the client sends after a push operation without
+/// writing anything — used when an operation is rejected so the protocol
+/// framing (and the TCP stream) stays aligned for the rest of the session.
+async fn drain_file_data(peer: &PeerConnection) -> Result<(), anyhow::Error> {
+    loop {
+        let msg = peer.receive_message().await?;
+        if msg.message_type != MessageType::FileChunk {
+            return Err(anyhow::anyhow!(
+                "expected FileChunk, got {:?}",
+                msg.message_type
+            ));
+        }
+        let chunk: FileChunkPayload = bincode::deserialize(&msg.payload)?;
+        if chunk.is_last {
+            break;
+        }
     }
     Ok(())
 }

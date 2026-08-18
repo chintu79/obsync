@@ -22,6 +22,7 @@ use obsync_core::storage::config::ConfigStore;
 use obsync_core::storage::db;
 use obsync_core::sync::engine::SyncEngine;
 use obsync_core::sync::peer::{run_server_session, SyncReport};
+use obsync_core::sync::scope::ScopeEntry;
 use serde::Deserialize;
 use std::convert::Infallible;
 use std::pin::Pin;
@@ -166,6 +167,18 @@ struct RestoreSnapshotRequest {
     timestamp: i64,
 }
 
+#[derive(Deserialize)]
+struct SetScopeRequest {
+    entries: Vec<ScopeEntry>,
+}
+
+#[derive(Deserialize)]
+struct SetDeviceScopeRequest {
+    entries: Vec<ScopeEntry>,
+    #[serde(default)]
+    read_only: Option<bool>,
+}
+
 fn vault_file() -> PathBuf {
     dirs_home().join(".obsync-server-vault.json")
 }
@@ -250,6 +263,12 @@ pub async fn run_server() -> anyhow::Result<()> {
         .route("/api/browse-vault", post(handle_browse_vault))
         .route("/api/files", get(handle_files))
         .route("/api/devices", get(handle_devices))
+        .route("/api/scopes", get(handle_scopes))
+        .route("/api/scopes/shared", post(handle_set_shared_scope))
+        .route(
+            "/api/devices/:fingerprint/scope",
+            post(handle_set_device_scope),
+        )
         .route("/api/activity", get(handle_activity))
         .route("/api/events", get(handle_events))
         .route("/api/conflicts", get(handle_conflicts))
@@ -383,7 +402,9 @@ async fn handle_sync_connection(mut stream: TcpStream, state: Arc<AppState>) -> 
 
     let mut engine = SyncEngine::new(vault_path, device_id).await?;
     engine.refresh_index(true).await?;
-    let report: SyncReport = run_server_session(&mut engine, &peer).await?;
+    let scope = engine.effective_scope(&peer_fingerprint);
+    let read_only = engine.device_read_only(&peer_fingerprint);
+    let report: SyncReport = run_server_session(&mut engine, &peer, &scope, read_only).await?;
     record_activity(
         &state,
         "sync",
@@ -628,6 +649,22 @@ async fn handle_devices(state: State<Arc<AppState>>) -> Json<Vec<serde_json::Val
     let approved = state.approved.lock().await.clone();
     let last_seen = state.last_seen.lock().await.clone();
 
+    let scopes: HashMap<String, (Vec<ScopeEntry>, bool)> = {
+        let guard = state.engine.lock().await;
+        match guard.as_ref() {
+            Some(e) => approved
+                .keys()
+                .map(|fp| {
+                    (
+                        fp.clone(),
+                        (e.device_scope(fp), e.device_read_only(fp)),
+                    )
+                })
+                .collect(),
+            None => HashMap::new(),
+        }
+    };
+
     let mut out: Vec<serde_json::Value> = Vec::new();
     if let Some(info) = self_info.as_ref() {
         out.push(serde_json::json!({
@@ -636,6 +673,8 @@ async fn handle_devices(state: State<Arc<AppState>>) -> Json<Vec<serde_json::Val
             "is_self": true,
             "online": true,
             "last_seen_ms": null,
+            "scope": [],
+            "read_only": false,
         }));
     }
     for (fp, name) in approved {
@@ -651,15 +690,101 @@ async fn handle_devices(state: State<Arc<AppState>>) -> Json<Vec<serde_json::Val
             .map(|t| t.elapsed() < Duration::from_secs(120))
             .unwrap_or(false);
         let last_seen_ms = seen.map(|t| t.elapsed().as_millis() as i64);
+        let (scope, read_only) = scopes.get(&fp).cloned().unwrap_or_default();
         out.push(serde_json::json!({
             "name": name,
             "fingerprint": fp,
             "is_self": false,
             "online": online,
             "last_seen_ms": last_seen_ms,
+            "scope": scope,
+            "read_only": read_only,
         }));
     }
     Json(out)
+}
+
+/// Full scope state for the dashboard: the shared selection plus every
+/// approved device's optional scope and read-only flag.
+async fn handle_scopes(state: State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let approved = state.approved.lock().await.clone();
+    let guard = state.engine.lock().await;
+    let Some(engine) = guard.as_ref() else {
+        return Json(serde_json::json!({ "error": "no vault selected" }));
+    };
+    let mut devices = serde_json::Map::new();
+    for fp in approved.keys() {
+        devices.insert(
+            fp.clone(),
+            serde_json::json!({
+                "entries": engine.device_scope(fp),
+                "read_only": engine.device_read_only(fp),
+            }),
+        );
+    }
+    Json(serde_json::json!({
+        "shared": engine.shared_scope(),
+        "devices": serde_json::Value::Object(devices),
+    }))
+}
+
+/// Replace the vault-wide shared selection (synced to every approved device).
+async fn handle_set_shared_scope(
+    state: State<Arc<AppState>>,
+    Json(req): Json<SetScopeRequest>,
+) -> Json<serde_json::Value> {
+    let guard = state.engine.lock().await;
+    let Some(engine) = guard.as_ref() else {
+        return Json(serde_json::json!({ "error": "no vault selected" }));
+    };
+    if let Err(e) = engine.set_shared_scope(&req.entries) {
+        return Json(serde_json::json!({ "error": e.to_string() }));
+    }
+    drop(guard);
+    record_activity(
+        &state,
+        "scope_updated",
+        format!("shared selection: {} entries", req.entries.len()),
+    )
+    .await;
+    refresh_status_cache(&state).await;
+    Json(serde_json::json!({ "ok": true, "count": req.entries.len() }))
+}
+
+/// Replace one approved device's optional scope (+ read-only flag).
+async fn handle_set_device_scope(
+    state: State<Arc<AppState>>,
+    AxumPath(fingerprint): AxumPath<String>,
+    Json(req): Json<SetDeviceScopeRequest>,
+) -> Json<serde_json::Value> {
+    let approved = {
+        let guard = state.approved.lock().await;
+        guard.contains_key(&fingerprint)
+    };
+    if !approved {
+        return Json(serde_json::json!({ "error": "unknown device" }));
+    }
+    let guard = state.engine.lock().await;
+    let Some(engine) = guard.as_ref() else {
+        return Json(serde_json::json!({ "error": "no vault selected" }));
+    };
+    if let Err(e) = engine.set_device_scope(&fingerprint, &req.entries) {
+        return Json(serde_json::json!({ "error": e.to_string() }));
+    }
+    if let Some(ro) = req.read_only {
+        if let Err(e) = engine.set_device_read_only(&fingerprint, ro) {
+            return Json(serde_json::json!({ "error": e.to_string() }));
+        }
+    }
+    drop(guard);
+    record_activity(
+        &state,
+        "scope_updated",
+        format!("device {fingerprint}: {} entries", req.entries.len()),
+    )
+    .await;
+    refresh_status_cache(&state).await;
+    Json(serde_json::json!({ "ok": true, "fingerprint": fingerprint }))
 }
 
 async fn handle_activity(state: State<Arc<AppState>>) -> Json<Vec<serde_json::Value>> {

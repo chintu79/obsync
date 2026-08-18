@@ -211,7 +211,8 @@ async fn cmd_sync(path: &PathBuf, addr: &str) -> anyhow::Result<()> {
     let peer = PeerConnection::connect(socket, device_id.clone(), device_name, fingerprint).await?;
     info!("Connected to {} ({})", peer.device_name, peer.address);
 
-    let report = run_client_session(&mut engine, &peer).await?;
+    let scope = engine.local_scope();
+    let report = run_client_session(&mut engine, &peer, &scope).await?;
     info!("Sync complete");
     println!(
         "pulled: {}, pushed: {}, deleted: {}, conflicts: {}",

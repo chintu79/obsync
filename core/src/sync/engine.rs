@@ -12,6 +12,7 @@ use crate::index::store::Store;
 use crate::network::peer::PeerConnection;
 use crate::storage::db;
 use crate::sync::delta::SyncOperation;
+use crate::sync::scope::{Scope, ScopeEntry};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncStateMachine {
@@ -370,6 +371,104 @@ impl SyncEngine {
         }
     }
 
+    /// Like `build_manifest`, but only paths allowed by `scope` are included.
+    /// Out-of-scope paths must never be advertised to a peer: omitting them
+    /// without a scope would be read as "new files to push" by the peer.
+    pub fn build_manifest_scoped(&self, scope: &Scope) -> Manifest {
+        if scope.is_everything() {
+            return self.build_manifest();
+        }
+        let files = self
+            .store
+            .get_all_file_states()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|f| scope.allows(&f.relative_path))
+            .collect();
+        let tombstones = self
+            .store
+            .get_tombstones()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|t| scope.allows(&t.relative_path))
+            .collect();
+        Manifest {
+            device_id: self.device_id.clone(),
+            files,
+            tombstones,
+            revision_counter: self.revision_counter,
+        }
+    }
+
+    // ---- Sync scopes ----
+
+    /// The vault-wide shared selection (synced to every approved device).
+    pub fn shared_scope(&self) -> Vec<ScopeEntry> {
+        self.store.get_shared_scope().unwrap_or_default()
+    }
+
+    /// Replace the shared selection.
+    pub fn set_shared_scope(&self, entries: &[ScopeEntry]) -> Result<(), anyhow::Error> {
+        Ok(self.store.set_shared_scope(entries)?)
+    }
+
+    /// Extra paths a specific approved device subscribes to.
+    pub fn device_scope(&self, fingerprint: &str) -> Vec<ScopeEntry> {
+        self.store
+            .get_device_scope(fingerprint)
+            .unwrap_or_default()
+    }
+
+    /// Replace a device's optional scope (empty = shared selection only).
+    pub fn set_device_scope(
+        &self,
+        fingerprint: &str,
+        entries: &[ScopeEntry],
+    ) -> Result<(), anyhow::Error> {
+        Ok(self.store.set_device_scope(fingerprint, entries)?)
+    }
+
+    /// Whether a device may only pull (never push/delete).
+    pub fn device_read_only(&self, fingerprint: &str) -> bool {
+        self.store
+            .get_device_read_only(fingerprint)
+            .unwrap_or(false)
+    }
+
+    pub fn set_device_read_only(&self, fingerprint: &str, read_only: bool) -> Result<(), anyhow::Error> {
+        Ok(self.store.set_device_read_only(fingerprint, read_only)?)
+    }
+
+    /// What a peer may see and sync: the shared selection plus the device's own
+    /// optional selection. Whole vault when neither is set.
+    pub fn effective_scope(&self, fingerprint: &str) -> Scope {
+        let shared = Scope {
+            entries: self.shared_scope(),
+        };
+        let device = Scope {
+            entries: self.device_scope(fingerprint),
+        };
+        shared.merge(&device)
+    }
+
+    /// This side's own scope (what this device wants to keep). Persisted in the
+    /// vault config; empty = whole vault. Used by clients connecting to a
+    /// server — the server decides what it sends, this decides what we keep.
+    pub fn local_scope(&self) -> Scope {
+        match self.store.get_config("local_scope").ok().flatten() {
+            Some(raw) => {
+                serde_json::from_str(&raw).unwrap_or_else(|_| Scope::everything())
+            }
+            None => Scope::everything(),
+        }
+    }
+
+    pub fn set_local_scope(&self, scope: &Scope) -> Result<(), anyhow::Error> {
+        self.store
+            .set_config("local_scope", &serde_json::to_string(scope)?)?;
+        Ok(())
+    }
+
     /// Process a remote manifest and produce sync operations.
     pub fn reconcile(&mut self, remote: &Manifest) -> ManifestDiff {
         let local = self.build_manifest();
@@ -725,6 +824,104 @@ mod tests {
             manifest.files[0].relative_path,
             PathBuf::from("manifest.md")
         );
+    }
+
+    #[tokio::test]
+    async fn test_scoped_manifest_filters_files_and_tombstones() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("notes")).unwrap();
+        std::fs::write(dir.path().join("notes/a.md"), b"a").unwrap();
+        std::fs::write(dir.path().join("notes/b.md"), b"b").unwrap();
+        std::fs::write(dir.path().join("todo.md"), b"todo").unwrap();
+        std::fs::write(dir.path().join("old.md"), b"old").unwrap();
+
+        let mut engine = SyncEngine::new(dir.path().to_owned(), "test-desk".into())
+            .await
+            .unwrap();
+        engine.initial_index().await.unwrap();
+        // Tombstone old.md
+        std::fs::remove_file(dir.path().join("old.md")).unwrap();
+        engine.refresh_index(true).await.unwrap();
+
+        let scope = Scope {
+            entries: vec![ScopeEntry {
+                kind: crate::sync::scope::ScopeKind::Folder,
+                path: "notes".into(),
+            }],
+        };
+        let manifest = engine.build_manifest_scoped(&scope);
+        assert_eq!(manifest.files.len(), 2);
+        assert!(manifest
+            .files
+            .iter()
+            .all(|f| f.relative_path.starts_with("notes")));
+        // The old.md tombstone is out of scope and must not leak
+        assert!(manifest.tombstones.is_empty());
+
+        let everything = engine.build_manifest();
+        assert_eq!(everything.files.len(), 3);
+        assert_eq!(everything.tombstones.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_effective_scope_merges_shared_and_device() {
+        let dir = TempDir::new().unwrap();
+        let engine = SyncEngine::new(dir.path().to_owned(), "test-desk".into())
+            .await
+            .unwrap();
+        engine
+            .set_shared_scope(&[ScopeEntry {
+                kind: crate::sync::scope::ScopeKind::Folder,
+                path: "shared".into(),
+            }])
+            .unwrap();
+        engine
+            .set_device_scope(
+                "fp-phone",
+                &[ScopeEntry {
+                    kind: crate::sync::scope::ScopeKind::File,
+                    path: "secret.md".into(),
+                }],
+            )
+            .unwrap();
+        engine.set_device_read_only("fp-phone", true).unwrap();
+
+        let scope = engine.effective_scope("fp-phone");
+        assert_eq!(scope.entries.len(), 2);
+        assert!(scope.allows(Path::new("shared/x.md")));
+        assert!(scope.allows(Path::new("secret.md")));
+        assert!(!scope.allows(Path::new("other.md")));
+        assert!(engine.device_read_only("fp-phone"));
+        // Another device with no optional scope sees only the shared selection
+        let other = engine.effective_scope("fp-other");
+        assert_eq!(other.entries.len(), 1);
+        assert!(other.allows(Path::new("shared/x.md")));
+        assert!(!other.allows(Path::new("secret.md")));
+        assert!(!engine.device_read_only("fp-other"));
+    }
+
+    #[tokio::test]
+    async fn test_local_scope_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let engine = SyncEngine::new(dir.path().to_owned(), "test-mobile".into())
+            .await
+            .unwrap();
+        assert!(engine.local_scope().is_everything());
+
+        let scope = Scope {
+            entries: vec![ScopeEntry {
+                kind: crate::sync::scope::ScopeKind::Folder,
+                path: "family".into(),
+            }],
+        };
+        engine.set_local_scope(&scope).unwrap();
+        drop(engine);
+
+        // A fresh engine on the same vault sees the stored scope
+        let engine2 = SyncEngine::new(dir.path().to_owned(), "test-mobile".into())
+            .await
+            .unwrap();
+        assert_eq!(engine2.local_scope(), scope);
     }
 
     #[tokio::test]

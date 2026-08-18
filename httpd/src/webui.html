@@ -228,6 +228,26 @@ input:focus-visible{outline:2px solid var(--ring);outline-offset:1px;border-colo
 /* ---------- Footer ---------- */
 .statusbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:4px;padding-top:16px;border-top:1px solid var(--border);font-size:12px;color:var(--text-2)}
 
+/* ---------- Sync scope ---------- */
+.scope-block{display:flex;flex-direction:column;gap:12px;padding:6px 2px}
+.scope-head{display:flex;flex-direction:column;gap:2px}
+.scope-title{font-weight:600;font-size:13.5px}
+.scope-sub{color:var(--text-2);font-size:12.5px}
+.scope-list{display:flex;flex-direction:column;max-height:280px;overflow:auto;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)}
+.scope-row{display:flex;align-items:center;gap:10px;padding:7px 12px;border-bottom:1px solid color-mix(in oklch,var(--border) 50%,transparent);font-size:13px;cursor:pointer}
+.scope-row:last-child{border-bottom:0}
+.scope-row input{width:16px;height:16px;flex:none;accent-color:var(--accent)}
+.scope-row .path{min-width:0;overflow-wrap:anywhere}
+.scope-empty{padding:18px;text-align:center;color:var(--text-3);font-size:13px}
+.scope-device{border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin-top:12px}
+.scope-device summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;font-weight:600;font-size:13.5px;user-select:none}
+.scope-device summary::-webkit-details-marker{display:none}
+.scope-device[open] summary{margin-bottom:8px}
+.scope-chip{font-size:11.5px;font-weight:650;padding:2px 8px;border-radius:999px;background:color-mix(in oklch,var(--accent) 14%,transparent);color:var(--accent)}
+.scope-chip.ro{background:color-mix(in oklch,var(--amber) 18%,transparent);color:var(--amber)}
+.scope-check{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text-2);cursor:pointer}
+.scope-check input{width:16px;height:16px;flex:none;accent-color:var(--accent)}
+
 /* ---------- Motion ---------- */
 @keyframes card-in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
@@ -477,6 +497,36 @@ input:focus-visible{outline:2px solid var(--ring);outline-offset:1px;border-colo
         <span id="fileCount" class="muted copy tnum"></span>
       </section>
 
+      <details class="card span-12" id="cardScope">
+        <summary>
+          <span class="card-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 3H2l8 9.46V19l4 2v-8.54Z"/></svg>
+            <h3>Sync scope</h3>
+          </span>
+          <span id="scopeSummary" class="pair-status"></span>
+        </summary>
+
+        <div class="scope-block">
+          <div class="scope-head">
+            <div class="scope-title">Shared with every device</div>
+            <div class="scope-sub">Files and folders every approved device receives. Leave empty to sync the whole vault.</div>
+          </div>
+          <div class="search">
+            <label for="scopeSharedSearch" class="sr-only">Filter files</label>
+            <input id="scopeSharedSearch" type="search" placeholder="Filter…" autocomplete="off">
+          </div>
+          <div id="scopeSharedList" class="scope-list" role="group" aria-label="Shared files and folders"></div>
+          <div class="btn-row">
+            <button id="btnSaveSharedScope" class="btn btn-ghost btn-sm" type="button" data-scope-save="shared">Save shared selection</button>
+            <button class="btn btn-ghost btn-sm" type="button" data-scope-addall="shared">Select all</button>
+            <button class="btn btn-ghost btn-sm" type="button" data-scope-clear="shared">Clear</button>
+          </div>
+        </div>
+
+        <div id="scopeDevices"></div>
+        <p id="scopeDeviceEmpty" class="empty" hidden>Approved devices appear here for per-device scope.</p>
+      </details>
+
     </div>
   </div>
 
@@ -515,6 +565,7 @@ const state = {
   pair: null,
   pairPayload: '',
   pending: [],
+  scopes: null,
 };
 
 function escapeHtml(s) {
@@ -863,6 +914,158 @@ function renderFiles() {
   $('fileCount').textContent = matches.length + ' of ' + all.length + ' files';
 }
 
+/* ---------- sync scope ---------- */
+const scopeDrafts = {};     // 'shared' or fingerprint -> Set(paths)
+const scopeReadOnly = {};   // fingerprint -> bool
+
+function scopeFolderCandidates() {
+  const set = new Set();
+  for (const f of state.files || []) {
+    const parts = (f.path || '').split('/');
+    parts.pop();
+    let acc = '';
+    for (const p of parts) {
+      acc = acc ? acc + '/' + p : p;
+      set.add(acc);
+    }
+  }
+  return [...set].sort();
+}
+
+function scopeEntriesFromDraft(set) {
+  const folders = new Set(scopeFolderCandidates());
+  return [...set].sort().map(p => ({ kind: folders.has(p) ? 'folder' : 'file', path: p }));
+}
+
+function renderScopeSummary() {
+  const n = (state.scopes && state.scopes.shared || []).length;
+  $('scopeSummary').textContent = n
+    ? n + ' item' + (n === 1 ? '' : 's') + ' shared'
+    : 'whole vault';
+}
+
+function renderScopeRows(listEl, draft, q) {
+  const folders = scopeFolderCandidates();
+  const ql = (q || '').toLowerCase().trim();
+  const rows = [];
+  for (const f of folders) {
+    if (ql && !f.toLowerCase().includes(ql)) continue;
+    rows.push(`<label class="scope-row"><input type="checkbox" data-scope-path="${escapeHtml(f)}" ${draft.has(f) ? 'checked' : ''}><span class="path">${escapeHtml(f)}/</span></label>`);
+  }
+  for (const f of state.files || []) {
+    if (ql && !(f.path || '').toLowerCase().includes(ql)) continue;
+    rows.push(`<label class="scope-row"><input type="checkbox" data-scope-path="${escapeHtml(f.path)}" ${draft.has(f.path) ? 'checked' : ''}><span class="path">${escapeHtml(f.path)}</span></label>`);
+  }
+  listEl.innerHTML = rows.join('') || '<div class="scope-empty">No files yet.</div>';
+}
+
+function renderScopes() {
+  renderScopeSummary();
+  const s = state.scopes || { shared: [], devices: {} };
+  if (!scopeDrafts.shared) {
+    scopeDrafts.shared = new Set((s.shared || []).map(e => e.path));
+  }
+  renderScopeRows($('scopeSharedList'), scopeDrafts.shared, $('scopeSharedSearch').value);
+
+  const devBox = $('scopeDevices');
+  const devices = (state.devices || []).filter(d => !d.is_self);
+  if (!devices.length) {
+    $('scopeDeviceEmpty').hidden = false;
+    devBox.innerHTML = '';
+    return;
+  }
+  $('scopeDeviceEmpty').hidden = true;
+  const prevFilters = {};
+  devBox.querySelectorAll('[data-scope-filter]').forEach(i => { prevFilters[i.dataset.scopeFilter] = i.value; });
+  devBox.innerHTML = devices.map(d => {
+    const fp = d.fingerprint;
+    if (!scopeDrafts[fp]) {
+      scopeDrafts[fp] = new Set((d.scope || []).map(e => e.path));
+      scopeReadOnly[fp] = !!(d.read_only);
+    }
+    const n = (d.scope || []).length;
+    const ro = !!scopeReadOnly[fp];
+    const chip = n
+      ? `<span class="scope-chip">${n} item${n === 1 ? '' : 's'}</span>`
+      : `<span class="scope-chip">shared only</span>`;
+    const roChip = ro ? `<span class="scope-chip ro">read-only</span>` : '';
+    return `<details class="scope-device" data-fp="${escapeHtml(fp)}">
+      <summary>${escapeHtml(d.name || 'Device')} ${chip} ${roChip}</summary>
+      <div class="scope-block">
+        <div class="scope-head">
+          <div class="scope-sub">Extra files this device gets on top of the shared selection. Leave empty for shared-only.</div>
+        </div>
+        <div class="search">
+          <label class="sr-only" for="scopeFilter-${fp}">Filter files</label>
+          <input id="scopeFilter-${fp}" type="search" placeholder="Filter…" autocomplete="off" data-scope-filter="${escapeHtml(fp)}" value="${escapeHtml(prevFilters[fp] || '')}">
+        </div>
+        <div class="scope-list" data-scope-list="${escapeHtml(fp)}"></div>
+        <label class="scope-check"><input type="checkbox" data-scope-ro="${escapeHtml(fp)}" ${ro ? 'checked' : ''}>Read-only: never push changes from this device</label>
+        <div class="btn-row">
+          <button class="btn btn-ghost btn-sm" type="button" data-scope-save="${escapeHtml(fp)}">Save device scope</button>
+          <button class="btn btn-ghost btn-sm" type="button" data-scope-addall="${escapeHtml(fp)}">Select all</button>
+          <button class="btn btn-ghost btn-sm" type="button" data-scope-clear="${escapeHtml(fp)}">Clear</button>
+        </div>
+      </div>
+    </details>`;
+  }).join('');
+  devBox.querySelectorAll('details.scope-device').forEach(det => {
+    const fp = det.dataset.fp;
+    const listEl = det.querySelector('[data-scope-list]');
+    const filterEl = det.querySelector('[data-scope-filter]');
+    renderScopeRows(listEl, scopeDrafts[fp], filterEl.value);
+  });
+}
+
+async function loadScopes() {
+  try {
+    state.scopes = await api('/scopes');
+  } catch (e) { state.scopes = null; }
+  renderScopes();
+}
+
+async function saveScope(fp) {
+  const btn = fp === 'shared'
+    ? $('btnSaveSharedScope')
+    : document.querySelector('[data-scope-save="' + fp + '"]');
+  if (!btn) return;
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    const entries = scopeEntriesFromDraft(scopeDrafts[fp]);
+    if (fp === 'shared') {
+      await api('/scopes/shared', { method: 'POST', body: JSON.stringify({ entries }) });
+      toast('Shared selection saved (' + entries.length + ' items)');
+    } else {
+      await api('/devices/' + encodeURIComponent(fp) + '/scope', {
+        method: 'POST',
+        body: JSON.stringify({ entries, read_only: !!scopeReadOnly[fp] })
+      });
+      toast('Device scope saved');
+    }
+    await loadData();
+    await loadScopes();
+  } catch (e) {
+    toast(e.message || 'Save failed');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+
+async function addAllScope(fp) {
+  const draft = scopeDrafts[fp];
+  for (const f of state.files || []) draft.add(f.path);
+  for (const f of scopeFolderCandidates()) draft.add(f);
+  renderScopes();
+}
+
+async function clearScope(fp) {
+  scopeDrafts[fp] = new Set();
+  renderScopes();
+}
+
 /* ---------- pairing QR ---------- */
 const QR_LOGO_URI = 'data:image/svg+xml;utf8,' + encodeURIComponent(
   `<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 80 80">` +
@@ -1010,6 +1213,7 @@ async function loadFiles() {
     state.files = await api('/files');
   } catch (e) { state.files = []; }
   renderFiles();
+  renderScopes();
 }
 
 async function loadVersions() {
@@ -1122,6 +1326,7 @@ function wire() {
   $('emptyForm').onsubmit = (e) => { e.preventDefault(); openVault(); };
   $('changeForm').onsubmit = (e) => { e.preventDefault(); openVault(); };
   $('fileSearch').addEventListener('input', renderFiles);
+  $('scopeSharedSearch').addEventListener('input', () => renderScopeRows($('scopeSharedList'), scopeDrafts.shared, $('scopeSharedSearch').value));
   $('btnRefreshFiles').onclick = loadFiles;
   $('btnRefreshVersions').onclick = loadVersions;
   $('copyPairing').onclick = () => copyText(state.pairPayload);
@@ -1131,7 +1336,7 @@ function wire() {
     $('cardConflicts').open = true;
   };
 
-  document.addEventListener('click', (e) => {
+document.addEventListener('click', (e) => {
     const keep = e.target.closest('[data-keep]');
     if (keep) {
       resolveConflict(decodeURIComponent(keep.dataset.resolve), 'Keep' + keep.dataset.keep[0].toUpperCase() + keep.dataset.keep.slice(1));
@@ -1145,6 +1350,43 @@ function wire() {
     const appr = e.target.closest('[data-approve]');
     if (appr) {
       decide(decodeURIComponent(appr.dataset.approve), appr.dataset.yes === '1');
+      return;
+    }
+    const save = e.target.closest('[data-scope-save]');
+    if (save) {
+      saveScope(save.dataset.scopeSave);
+      return;
+    }
+    const addAll = e.target.closest('[data-scope-addall]');
+    if (addAll) {
+      addAllScope(addAll.dataset.scopeAddall);
+      return;
+    }
+    const clear = e.target.closest('[data-scope-clear]');
+    if (clear) {
+      clearScope(clear.dataset.scopeClear);
+    }
+  });
+
+  document.addEventListener('input', (e) => {
+    if (e.target.matches('[data-scope-filter]')) {
+      const det = e.target.closest('details.scope-device');
+      renderScopeRows(det.querySelector('[data-scope-list]'), scopeDrafts[det.dataset.fp], e.target.value);
+    }
+  });
+
+  document.addEventListener('change', (e) => {
+    const t = e.target;
+    if (t.matches('[data-scope-path]')) {
+      const det = t.closest('details.scope-device');
+      const fp = det ? det.dataset.fp : 'shared';
+      if (t.checked) scopeDrafts[fp].add(t.dataset.scopePath);
+      else scopeDrafts[fp].delete(t.dataset.scopePath);
+      return;
+    }
+    if (t.matches('[data-scope-ro]')) {
+      const det = t.closest('details.scope-device');
+      scopeReadOnly[det.dataset.fp] = t.checked;
     }
   });
 }
@@ -1167,6 +1409,9 @@ async function onActivity(kind) {
     await loadFiles();
     await loadVersions();
   }
+  if (kind === 'scope_updated') {
+    await loadScopes();
+  }
   if (kind === 'vault_selected') {
     await loadPairingQr();
   }
@@ -1182,6 +1427,7 @@ async function onActivity(kind) {
   loadFiles();
   loadVersions();
   loadIdentity();
+  loadScopes();
   loadPairingQr();
   // Safety-net polling: catches online/offline decay and anything SSE missed.
   setInterval(loadData, 15000);

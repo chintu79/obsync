@@ -42,14 +42,22 @@ if ! command -v cargo >/dev/null 2>&1; then
     exit 1
 fi
 
+# Rebuild when the binary is missing OR any source is newer than it —
+# otherwise a stale binary silently serves the old dashboard/sync code.
+needs_rebuild() {
+    local bin="$1"
+    [ ! -x "$bin" ] && return 0
+    find core cli httpd Cargo.toml Cargo.lock -type f -newer "$bin" -print -quit 2>/dev/null | grep -q .
+}
+
 if [ "$PROFILE" = "release" ]; then
-    if [ ! -x "$BIN" ]; then
+    if needs_rebuild "$BIN"; then
         echo "→ Building obsync-httpd (release)…"
         cargo build --release -p obsync-httpd
     fi
     SERVER="$BIN"
 else
-    if [ ! -x "$DEBUG_BIN" ]; then
+    if needs_rebuild "$DEBUG_BIN"; then
         echo "→ Building obsync-httpd (debug)…"
         cargo build -p obsync-httpd
     fi

@@ -14,6 +14,11 @@ pub struct Store {
 impl Store {
     pub fn open(path: &Path) -> SqlResult<Self> {
         let conn = Connection::open(path)?;
+        // WAL lets the dashboard session and sync sessions (separate
+        // connections) read/write concurrently; the busy timeout turns
+        // lock contention into a short wait instead of SQLITE_BUSY errors.
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let store = Self { conn };
         store.migrate()?;
         Ok(store)
@@ -21,6 +26,8 @@ impl Store {
 
     pub fn open_in_memory() -> SqlResult<Self> {
         let conn = Connection::open_in_memory()?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let store = Self { conn };
         store.migrate()?;
         Ok(store)
@@ -294,14 +301,15 @@ impl Store {
 
     /// Replace the whole shared selection.
     pub fn set_shared_scope(&self, entries: &[ScopeEntry]) -> SqlResult<()> {
-        self.conn.execute("DELETE FROM shared_scope", [])?;
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM shared_scope", [])?;
         for e in entries {
-            self.conn.execute(
+            tx.execute(
                 "INSERT OR REPLACE INTO shared_scope (path, kind) VALUES (?1, ?2)",
                 params![e.path, Self::scope_kind_to_i32(&e.kind)],
             )?;
         }
-        Ok(())
+        tx.commit()
     }
 
     /// Extra paths a specific approved device subscribes to, on top of the
@@ -321,17 +329,18 @@ impl Store {
 
     /// Replace a device's optional scope. Empty = shared selection only.
     pub fn set_device_scope(&self, fingerprint: &str, entries: &[ScopeEntry]) -> SqlResult<()> {
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             "DELETE FROM device_scopes WHERE fingerprint = ?1",
             params![fingerprint],
         )?;
         for e in entries {
-            self.conn.execute(
+            tx.execute(
                 "INSERT OR REPLACE INTO device_scopes (fingerprint, path, kind) VALUES (?1, ?2, ?3)",
                 params![fingerprint, e.path, Self::scope_kind_to_i32(&e.kind)],
             )?;
         }
-        Ok(())
+        tx.commit()
     }
 
     /// Whether a device is read-only: it may pull but never push/delete.

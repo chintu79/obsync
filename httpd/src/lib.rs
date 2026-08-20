@@ -125,6 +125,7 @@ async fn build_status(state: &Arc<AppState>) -> serde_json::Value {
         act.iter().rev().find(|a| a.kind == "sync").map(|a| a.ts)
     };
 
+
     serde_json::json!({
         "vault": vault,
         "device": device,
@@ -356,7 +357,12 @@ async fn handle_sync_connection(mut stream: TcpStream, state: Arc<AppState>) -> 
         let guard = state.approved.lock().await;
         guard.contains_key(&peer_fingerprint)
     };
-    if !approved && !await_approval(&state, &peer_id, &peer_name, &peer_fingerprint).await {
+    let allowed = if approved {
+        true
+    } else {
+        await_approval(&state, &peer_id, &peer_name, &peer_fingerprint).await
+    };
+    if !allowed {
         info!(
             "Connection from {} ({}) rejected; closing",
             peer_name, peer_id
@@ -452,11 +458,13 @@ async fn await_approval(
 
     let mut pending = state.pending.lock().await;
     pending.remove(device_id);
+    drop(pending);
 
     if allowed {
         let mut approved = state.approved.lock().await;
         approved.insert(fingerprint.to_string(), device_name.to_string());
         save_approved(&approved);
+        drop(approved);
         record_activity(state, "device_approved", device_name.to_string()).await;
     } else {
         record_activity(state, "device_rejected", device_name.to_string()).await;

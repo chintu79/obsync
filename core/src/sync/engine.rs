@@ -428,6 +428,32 @@ impl SyncEngine {
         Ok(self.store.set_device_scope(fingerprint, entries)?)
     }
 
+    /// Vault-wide per-file exclusions (apply to every approved device).
+    pub fn shared_exclusions(&self) -> Vec<String> {
+        self.store.get_shared_exclusions().unwrap_or_default()
+    }
+
+    /// Replace the vault-wide exclusions.
+    pub fn set_shared_exclusions(&self, paths: &[String]) -> Result<(), anyhow::Error> {
+        Ok(self.store.set_shared_exclusions(paths)?)
+    }
+
+    /// Per-file exclusions for one approved device.
+    pub fn device_exclusions(&self, fingerprint: &str) -> Vec<String> {
+        self.store
+            .get_device_exclusions(fingerprint)
+            .unwrap_or_default()
+    }
+
+    /// Replace one device's exclusions.
+    pub fn set_device_exclusions(
+        &self,
+        fingerprint: &str,
+        paths: &[String],
+    ) -> Result<(), anyhow::Error> {
+        Ok(self.store.set_device_exclusions(fingerprint, paths)?)
+    }
+
     /// Whether a device may only pull (never push/delete).
     pub fn device_read_only(&self, fingerprint: &str) -> bool {
         self.store
@@ -440,13 +466,16 @@ impl SyncEngine {
     }
 
     /// What a peer may see and sync: the shared selection plus the device's own
-    /// optional selection. Whole vault when neither is set.
+    /// optional selection. Whole vault when neither is set. Exclusions from
+    /// either side always apply.
     pub fn effective_scope(&self, fingerprint: &str) -> Scope {
         let shared = Scope {
             entries: self.shared_scope(),
+            excludes: self.shared_exclusions(),
         };
         let device = Scope {
             entries: self.device_scope(fingerprint),
+            excludes: self.device_exclusions(fingerprint),
         };
         shared.merge(&device)
     }
@@ -848,6 +877,7 @@ mod tests {
                 kind: crate::sync::scope::ScopeKind::Folder,
                 path: "notes".into(),
             }],
+            excludes: Vec::new(),
         };
         let manifest = engine.build_manifest_scoped(&scope);
         assert_eq!(manifest.files.len(), 2);
@@ -861,6 +891,45 @@ mod tests {
         let everything = engine.build_manifest();
         assert_eq!(everything.files.len(), 3);
         assert_eq!(everything.tombstones.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_scoped_manifest_applies_exclusions() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("notes")).unwrap();
+        std::fs::write(dir.path().join("notes/a.md"), b"a").unwrap();
+        std::fs::write(dir.path().join("notes/secret.md"), b"secret").unwrap();
+        std::fs::write(dir.path().join("todo.md"), b"todo").unwrap();
+
+        let mut engine = SyncEngine::new(dir.path().to_owned(), "test-desk".into())
+            .await
+            .unwrap();
+        engine.initial_index().await.unwrap();
+
+        // Whole vault minus two files: no includes, exclusions only.
+        let scope = Scope {
+            entries: Vec::new(),
+            excludes: vec!["notes/secret.md".into(), "todo.md".into()],
+        };
+        assert!(!scope.is_everything());
+        let manifest = engine.build_manifest_scoped(&scope);
+        assert_eq!(manifest.files.len(), 1);
+        assert_eq!(manifest.files[0].relative_path.to_string_lossy(), "notes/a.md");
+
+        // Folder include + file exclusion inside it.
+        let scope = Scope {
+            entries: vec![ScopeEntry {
+                kind: crate::sync::scope::ScopeKind::Folder,
+                path: "notes".into(),
+            }],
+            excludes: vec!["notes/secret.md".into()],
+        };
+        let manifest = engine.build_manifest_scoped(&scope);
+        assert_eq!(manifest.files.len(), 1);
+        assert_eq!(manifest.files[0].relative_path.to_string_lossy(), "notes/a.md");
+
+        // The full index is untouched by scoping — exclusion is a pure filter.
+        assert_eq!(engine.build_manifest().files.len(), 3);
     }
 
     #[tokio::test]
@@ -901,6 +970,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_effective_scope_unions_exclusions() {
+        let dir = TempDir::new().unwrap();
+        let engine = SyncEngine::new(dir.path().to_owned(), "test-desk".into())
+            .await
+            .unwrap();
+        // No includes at all: whole vault, minus exclusions.
+        engine
+            .set_shared_exclusions(&["notes/secret.md".into()])
+            .unwrap();
+        engine
+            .set_device_exclusions("fp-phone", &["todo.md".into()])
+            .unwrap();
+
+        let scope = engine.effective_scope("fp-phone");
+        assert!(scope.allows(Path::new("anything/else.md")));
+        assert!(!scope.allows(Path::new("notes/secret.md")));
+        assert!(!scope.allows(Path::new("todo.md")));
+
+        // Other devices only inherit the shared exclusion.
+        let other = engine.effective_scope("fp-other");
+        assert!(other.allows(Path::new("todo.md")));
+        assert!(!other.allows(Path::new("notes/secret.md")));
+
+        // Exclusion wins over an include from the other side.
+        engine
+            .set_shared_scope(&[ScopeEntry {
+                kind: crate::sync::scope::ScopeKind::Folder,
+                path: "notes".into(),
+            }])
+            .unwrap();
+        let scope = engine.effective_scope("fp-phone");
+        assert!(scope.allows(Path::new("notes/a.md")));
+        assert!(!scope.allows(Path::new("notes/secret.md")));
+    }
+
+    #[tokio::test]
     async fn test_local_scope_roundtrip() {
         let dir = TempDir::new().unwrap();
         let engine = SyncEngine::new(dir.path().to_owned(), "test-mobile".into())
@@ -913,6 +1018,7 @@ mod tests {
                 kind: crate::sync::scope::ScopeKind::Folder,
                 path: "family".into(),
             }],
+            excludes: Vec::new(),
         };
         engine.set_local_scope(&scope).unwrap();
         drop(engine);

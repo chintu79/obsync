@@ -238,6 +238,10 @@ input:focus-visible{outline:2px solid var(--ring);outline-offset:1px;border-colo
 .scope-row:last-child{border-bottom:0}
 .scope-row input{width:16px;height:16px;flex:none;accent-color:var(--accent)}
 .scope-row .path{min-width:0;overflow-wrap:anywhere}
+.scope-file-main{display:flex;align-items:center;gap:10px;min-width:0;flex:1;cursor:pointer}
+.scope-row.is-excluded .path{text-decoration:line-through;color:var(--text-3)}
+.scope-x{flex:none;border:1px solid var(--border);background:transparent;color:var(--text-3);border-radius:8px;font-size:11px;padding:2px 8px;cursor:pointer}
+.scope-x:hover{color:var(--text-1);border-color:var(--text-3)}
 .scope-empty{padding:18px;text-align:center;color:var(--text-3);font-size:13px}
 .scope-device{border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin-top:12px}
 .scope-device summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;font-weight:600;font-size:13.5px;user-select:none}
@@ -916,6 +920,7 @@ function renderFiles() {
 
 /* ---------- sync scope ---------- */
 const scopeDrafts = {};     // 'shared' or fingerprint -> Set(paths)
+const scopeExcludes = {};   // 'shared' or fingerprint -> Set(excluded file paths)
 const scopeReadOnly = {};   // fingerprint -> bool
 
 function scopeFolderCandidates() {
@@ -938,13 +943,15 @@ function scopeEntriesFromDraft(set) {
 }
 
 function renderScopeSummary() {
-  const n = (state.scopes && state.scopes.shared || []).length;
-  $('scopeSummary').textContent = n
-    ? n + ' item' + (n === 1 ? '' : 's') + ' shared'
-    : 'whole vault';
+  const s = state.scopes || {};
+  const n = (s.shared || []).length;
+  const x = (s.shared_excludes || []).length;
+  let text = n ? n + ' item' + (n === 1 ? '' : 's') + ' shared' : 'whole vault';
+  if (x) text += ' · ' + x + ' excluded';
+  $('scopeSummary').textContent = text;
 }
 
-function renderScopeRows(listEl, draft, q) {
+function renderScopeRows(listEl, draft, excludes, q) {
   const folders = scopeFolderCandidates();
   const ql = (q || '').toLowerCase().trim();
   const rows = [];
@@ -954,18 +961,26 @@ function renderScopeRows(listEl, draft, q) {
   }
   for (const f of state.files || []) {
     if (ql && !(f.path || '').toLowerCase().includes(ql)) continue;
-    rows.push(`<label class="scope-row"><input type="checkbox" data-scope-path="${escapeHtml(f.path)}" ${draft.has(f.path) ? 'checked' : ''}><span class="path">${escapeHtml(f.path)}</span></label>`);
+    const excluded = excludes.has(f.path);
+    rows.push(`<div class="scope-row${excluded ? ' is-excluded' : ''}"><label class="scope-file-main"><input type="checkbox" data-scope-path="${escapeHtml(f.path)}" ${!excluded && draft.has(f.path) ? 'checked' : ''}${excluded ? ' disabled' : ''}><span class="path">${escapeHtml(f.path)}</span></label>${
+      excluded
+        ? `<button type="button" class="scope-x" data-scope-include="${escapeHtml(f.path)}" title="Sync this file again">Sync</button>`
+        : `<button type="button" class="scope-x" data-scope-exclude="${escapeHtml(f.path)}" title="Don't sync this file">Don't sync</button>`
+    }</div>`);
   }
   listEl.innerHTML = rows.join('') || '<div class="scope-empty">No files yet.</div>';
 }
 
 function renderScopes() {
   renderScopeSummary();
-  const s = state.scopes || { shared: [], devices: {} };
+  const s = state.scopes || { shared: [], shared_excludes: [], devices: {} };
   if (!scopeDrafts.shared) {
     scopeDrafts.shared = new Set((s.shared || []).map(e => e.path));
   }
-  renderScopeRows($('scopeSharedList'), scopeDrafts.shared, $('scopeSharedSearch').value);
+  if (!scopeExcludes.shared) {
+    scopeExcludes.shared = new Set(s.shared_excludes || []);
+  }
+  renderScopeRows($('scopeSharedList'), scopeDrafts.shared, scopeExcludes.shared, $('scopeSharedSearch').value);
 
   const devBox = $('scopeDevices');
   const devices = (state.devices || []).filter(d => !d.is_self);
@@ -981,19 +996,23 @@ function renderScopes() {
     const fp = d.fingerprint;
     if (!scopeDrafts[fp]) {
       scopeDrafts[fp] = new Set((d.scope || []).map(e => e.path));
+      scopeExcludes[fp] = new Set(d.excludes || []);
       scopeReadOnly[fp] = !!(d.read_only);
     }
     const n = (d.scope || []).length;
+    const x = (d.excludes || []).length;
     const ro = !!scopeReadOnly[fp];
-    const chip = n
-      ? `<span class="scope-chip">${n} item${n === 1 ? '' : 's'}</span>`
-      : `<span class="scope-chip">shared only</span>`;
+    let chip = n
+      ? `${n} item${n === 1 ? '' : 's'}`
+      : `shared only`;
+    if (x) chip += ` · ${x} excluded`;
+    const chipHtml = `<span class="scope-chip">${chip}</span>`;
     const roChip = ro ? `<span class="scope-chip ro">read-only</span>` : '';
     return `<details class="scope-device" data-fp="${escapeHtml(fp)}">
-      <summary>${escapeHtml(d.name || 'Device')} ${chip} ${roChip}</summary>
+      <summary>${escapeHtml(d.name || 'Device')} ${chipHtml} ${roChip}</summary>
       <div class="scope-block">
         <div class="scope-head">
-          <div class="scope-sub">Extra files this device gets on top of the shared selection. Leave empty for shared-only.</div>
+          <div class="scope-sub">Extra files this device gets on top of the shared selection. Leave empty for shared-only. "Don't sync" hides a single file from this device everywhere.</div>
         </div>
         <div class="search">
           <label class="sr-only" for="scopeFilter-${fp}">Filter files</label>
@@ -1013,7 +1032,7 @@ function renderScopes() {
     const fp = det.dataset.fp;
     const listEl = det.querySelector('[data-scope-list]');
     const filterEl = det.querySelector('[data-scope-filter]');
-    renderScopeRows(listEl, scopeDrafts[fp], filterEl.value);
+    renderScopeRows(listEl, scopeDrafts[fp], scopeExcludes[fp], filterEl.value);
   });
 }
 
@@ -1034,13 +1053,14 @@ async function saveScope(fp) {
   btn.textContent = 'Saving…';
   try {
     const entries = scopeEntriesFromDraft(scopeDrafts[fp]);
+    const excludes = [...(scopeExcludes[fp] || [])].sort();
     if (fp === 'shared') {
-      await api('/scopes/shared', { method: 'POST', body: JSON.stringify({ entries }) });
-      toast('Shared selection saved (' + entries.length + ' items)');
+      await api('/scopes/shared', { method: 'POST', body: JSON.stringify({ entries, excludes }) });
+      toast('Shared selection saved (' + entries.length + ' items' + (excludes.length ? ', ' + excludes.length + ' excluded' : '') + ')');
     } else {
       await api('/devices/' + encodeURIComponent(fp) + '/scope', {
         method: 'POST',
-        body: JSON.stringify({ entries, read_only: !!scopeReadOnly[fp] })
+        body: JSON.stringify({ entries, excludes, read_only: !!scopeReadOnly[fp] })
       });
       toast('Device scope saved');
     }
@@ -1064,6 +1084,23 @@ async function addAllScope(fp) {
 async function clearScope(fp) {
   scopeDrafts[fp] = new Set();
   renderScopes();
+}
+
+/** Re-render just one scope list (shared or device) without collapsing
+ *  open <details> elements. */
+function rerenderScopeList(fp) {
+  if (fp === 'shared') {
+    renderScopeRows($('scopeSharedList'), scopeDrafts.shared, scopeExcludes.shared, $('scopeSharedSearch').value);
+    return;
+  }
+  const det = document.querySelector('details.scope-device[data-fp="' + CSS.escape(fp) + '"]');
+  if (!det) return;
+  renderScopeRows(
+    det.querySelector('[data-scope-list]'),
+    scopeDrafts[fp],
+    scopeExcludes[fp],
+    (det.querySelector('[data-scope-filter]') || {}).value || ''
+  );
 }
 
 /* ---------- pairing QR ---------- */
@@ -1326,7 +1363,7 @@ function wire() {
   $('emptyForm').onsubmit = (e) => { e.preventDefault(); openVault(); };
   $('changeForm').onsubmit = (e) => { e.preventDefault(); openVault(); };
   $('fileSearch').addEventListener('input', renderFiles);
-  $('scopeSharedSearch').addEventListener('input', () => renderScopeRows($('scopeSharedList'), scopeDrafts.shared, $('scopeSharedSearch').value));
+  $('scopeSharedSearch').addEventListener('input', () => renderScopeRows($('scopeSharedList'), scopeDrafts.shared, scopeExcludes.shared, $('scopeSharedSearch').value));
   $('btnRefreshFiles').onclick = loadFiles;
   $('btnRefreshVersions').onclick = loadVersions;
   $('copyPairing').onclick = () => copyText(state.pairPayload);
@@ -1365,13 +1402,33 @@ document.addEventListener('click', (e) => {
     const clear = e.target.closest('[data-scope-clear]');
     if (clear) {
       clearScope(clear.dataset.scopeClear);
+      return;
+    }
+    const inc = e.target.closest('[data-scope-include]');
+    if (inc) {
+      const det = inc.closest('details.scope-device');
+      const fp = det ? det.dataset.fp : 'shared';
+      const p = inc.dataset.scopeInclude;
+      scopeExcludes[fp].delete(p);
+      scopeDrafts[fp].add(p);
+      rerenderScopeList(fp);
+      return;
+    }
+    const exc = e.target.closest('[data-scope-exclude]');
+    if (exc) {
+      const det = exc.closest('details.scope-device');
+      const fp = det ? det.dataset.fp : 'shared';
+      const p = exc.dataset.scopeExclude;
+      scopeExcludes[fp].add(p);
+      scopeDrafts[fp].delete(p);
+      rerenderScopeList(fp);
     }
   });
 
   document.addEventListener('input', (e) => {
     if (e.target.matches('[data-scope-filter]')) {
       const det = e.target.closest('details.scope-device');
-      renderScopeRows(det.querySelector('[data-scope-list]'), scopeDrafts[det.dataset.fp], e.target.value);
+      renderScopeRows(det.querySelector('[data-scope-list]'), scopeDrafts[det.dataset.fp], scopeExcludes[det.dataset.fp], e.target.value);
     }
   });
 

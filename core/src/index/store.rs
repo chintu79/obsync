@@ -91,6 +91,12 @@ impl Store {
                 fingerprint TEXT PRIMARY KEY,
                 read_only INTEGER NOT NULL DEFAULT 0
             );
+
+            CREATE TABLE IF NOT EXISTS scope_exclusions (
+                fingerprint TEXT NOT NULL,
+                path TEXT NOT NULL,
+                PRIMARY KEY (fingerprint, path)
+            );
             ",
         )?;
 
@@ -343,6 +349,56 @@ impl Store {
         tx.commit()
     }
 
+    /// Sentinel fingerprint for the vault-wide (shared) exclusion list.
+    pub const SHARED_EXCLUSION_OWNER: &'static str = "";
+
+    /// Per-file exclusions for one owner: `SHARED_EXCLUSION_OWNER` for the
+    /// vault-wide list, otherwise an approved device's fingerprint. Excluded
+    /// paths never sync regardless of folder/file includes.
+    pub fn get_scope_exclusions(&self, owner: &str) -> SqlResult<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT path FROM scope_exclusions WHERE fingerprint = ?1 ORDER BY path",
+        )?;
+        let rows = stmt.query_map(params![owner], |row| row.get::<_, String>(0))?;
+        rows.collect()
+    }
+
+    /// Replace one owner's exclusion list.
+    pub fn set_scope_exclusions(&self, owner: &str, paths: &[String]) -> SqlResult<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM scope_exclusions WHERE fingerprint = ?1",
+            params![owner],
+        )?;
+        for p in paths {
+            tx.execute(
+                "INSERT OR REPLACE INTO scope_exclusions (fingerprint, path) VALUES (?1, ?2)",
+                params![owner, p],
+            )?;
+        }
+        tx.commit()
+    }
+
+    /// The vault-wide per-file exclusions.
+    pub fn get_shared_exclusions(&self) -> SqlResult<Vec<String>> {
+        self.get_scope_exclusions(Self::SHARED_EXCLUSION_OWNER)
+    }
+
+    /// Replace the vault-wide exclusions.
+    pub fn set_shared_exclusions(&self, paths: &[String]) -> SqlResult<()> {
+        self.set_scope_exclusions(Self::SHARED_EXCLUSION_OWNER, paths)
+    }
+
+    /// One approved device's per-file exclusions.
+    pub fn get_device_exclusions(&self, fingerprint: &str) -> SqlResult<Vec<String>> {
+        self.get_scope_exclusions(fingerprint)
+    }
+
+    /// Replace one device's exclusions.
+    pub fn set_device_exclusions(&self, fingerprint: &str, paths: &[String]) -> SqlResult<()> {
+        self.set_scope_exclusions(fingerprint, paths)
+    }
+
     /// Whether a device is read-only: it may pull but never push/delete.
     pub fn get_device_read_only(&self, fingerprint: &str) -> SqlResult<bool> {
         use rusqlite::OptionalExtension;
@@ -559,5 +615,53 @@ mod tests {
         assert!(store.get_device_read_only("fp-a").unwrap());
         store.set_device_read_only("fp-a", false).unwrap();
         assert!(!store.get_device_read_only("fp-a").unwrap());
+    }
+
+    #[test]
+    fn test_shared_exclusions_roundtrip_and_replace() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.get_shared_exclusions().unwrap().is_empty());
+
+        store
+            .set_shared_exclusions(&["notes/secret.md".into(), "todo.md".into()])
+            .unwrap();
+        let mut got = store.get_shared_exclusions().unwrap();
+        got.sort();
+        assert_eq!(got, vec!["notes/secret.md".to_string(), "todo.md".to_string()]);
+
+        // Replace-whole-set semantics: an empty list clears.
+        store.set_shared_exclusions(&[]).unwrap();
+        assert!(store.get_shared_exclusions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_device_exclusions_are_per_fingerprint() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .set_device_exclusions("fp-a", &["private/a.md".into()])
+            .unwrap();
+        store
+            .set_device_exclusions("fp-b", &["work/b.md".into(), "work/c.md".into()])
+            .unwrap();
+
+        assert_eq!(
+            store.get_device_exclusions("fp-a").unwrap(),
+            vec!["private/a.md".to_string()]
+        );
+        assert_eq!(store.get_device_exclusions("fp-b").unwrap().len(), 2);
+        assert!(store.get_device_exclusions("fp-c").unwrap().is_empty());
+
+        // Shared list is independent of device lists.
+        store.set_shared_exclusions(&["shared-only.md".into()]).unwrap();
+        assert_eq!(
+            store.get_shared_exclusions().unwrap(),
+            vec!["shared-only.md".to_string()]
+        );
+        assert_eq!(store.get_device_exclusions("fp-a").unwrap().len(), 1);
+
+        // Replacing one device's list leaves the other untouched.
+        store.set_device_exclusions("fp-a", &[]).unwrap();
+        assert!(store.get_device_exclusions("fp-a").unwrap().is_empty());
+        assert_eq!(store.get_device_exclusions("fp-b").unwrap().len(), 2);
     }
 }

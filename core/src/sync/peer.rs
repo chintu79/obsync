@@ -586,4 +586,181 @@ mod tests {
         let written = tokio::fs::read(&dest).await.unwrap();
         assert_eq!(written, data);
     }
+
+    /// Engine over a temp vault pre-seeded with files and fully indexed.
+    async fn seeded_engine(
+        dir: &Path,
+        id: &str,
+        files: &[(&str, &[u8])],
+    ) -> SyncEngine {
+        for (rel, data) in files {
+            let p = dir.join(rel);
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(p, data).unwrap();
+        }
+        let mut engine = SyncEngine::new(dir.to_owned(), id.into())
+            .await
+            .unwrap();
+        engine.initial_index().await.unwrap();
+        engine
+    }
+
+    /// A connected client/server PeerConnection pair over TCP loopback.
+    async fn peer_pair() -> (PeerConnection, PeerConnection) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accept = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            stream
+        });
+        let client_stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let server_stream = accept.await.unwrap();
+        (
+            PeerConnection {
+                device_id: "c".into(),
+                device_name: "client".into(),
+                address: addr,
+                stream: std::sync::Arc::new(tokio::sync::Mutex::new(client_stream)),
+            },
+            PeerConnection {
+                device_id: "s".into(),
+                device_name: "server".into(),
+                address: addr,
+                stream: std::sync::Arc::new(tokio::sync::Mutex::new(server_stream)),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn test_client_exclusion_never_pulls_excluded_file() {
+        let sdir = TempDir::new().unwrap();
+        let cdir = TempDir::new().unwrap();
+        let mut server_engine = seeded_engine(
+            sdir.path(),
+            "srv",
+            &[
+                ("notes/a.md", b"a" as &[u8]),
+                ("notes/secret.md", b"secret"),
+                ("todo.md", b"todo"),
+            ],
+        )
+        .await;
+        let mut client_engine = seeded_engine(cdir.path(), "cli", &[]).await;
+
+        // Client keeps everything except one file (exclusions-only scope).
+        let client_scope = Scope {
+            entries: Vec::new(),
+            excludes: vec!["notes/secret.md".into()],
+        };
+        let server_scope = Scope::everything();
+
+        let (client_peer, server_peer) = peer_pair().await;
+        let srv = tokio::spawn(async move {
+            run_server_session(&mut server_engine, &server_peer, &server_scope, false)
+                .await
+                .unwrap()
+        });
+        let report = run_client_session(&mut client_engine, &client_peer, &client_scope)
+            .await
+            .unwrap();
+        srv.await.unwrap();
+
+        assert_eq!(report.pulled_files, 2); // notes/a.md + todo.md, not secret
+        assert!(cdir.path().join("notes/a.md").exists());
+        assert!(cdir.path().join("todo.md").exists());
+        assert!(!cdir.path().join("notes/secret.md").exists());
+    }
+
+    #[tokio::test]
+    async fn test_server_exclusion_rejects_push_and_session_survives() {
+        let sdir = TempDir::new().unwrap();
+        let cdir = TempDir::new().unwrap();
+        // The excluded path exists ONLY on the client.
+        let mut server_engine =
+            seeded_engine(sdir.path(), "srv", &[("notes/a.md", b"a" as &[u8])]).await;
+        let mut client_engine = seeded_engine(
+            cdir.path(),
+            "cli",
+            &[
+                ("notes/a.md", b"a" as &[u8]),
+                ("notes/secret.md", b"client secret"),
+            ],
+        )
+        .await;
+
+        // Server hides notes/secret.md from every device.
+        let server_scope = Scope {
+            entries: Vec::new(),
+            excludes: vec!["notes/secret.md".into()],
+        };
+        let client_scope = Scope::everything();
+
+        let (client_peer, server_peer) = peer_pair().await;
+        let srv = tokio::spawn(async move {
+            run_server_session(&mut server_engine, &server_peer, &server_scope, false)
+                .await
+                .unwrap()
+        });
+        let report = run_client_session(&mut client_engine, &client_peer, &client_scope)
+            .await
+            .unwrap();
+        let srv_report = srv.await.unwrap();
+
+        // The push was attempted (server manifest lacked the file)…
+        assert_eq!(report.pushed_files, 1);
+        // …but the server refused it and stayed alive (framing intact).
+        assert!(!sdir.path().join("notes/secret.md").exists());
+        assert_eq!(srv_report.pulled_files, 0);
+    }
+
+    #[tokio::test]
+    async fn test_client_exclusion_ignores_server_tombstone() {
+        let sdir = TempDir::new().unwrap();
+        let cdir = TempDir::new().unwrap();
+        let mut server_engine = seeded_engine(
+            sdir.path(),
+            "srv",
+            &[("notes/a.md", b"a" as &[u8]), ("todo.md", b"todo")],
+        )
+        .await;
+        // Authoritative server deletes todo.md → tombstone.
+        std::fs::remove_file(sdir.path().join("todo.md")).unwrap();
+        server_engine.refresh_index(true).await.unwrap();
+
+        // Client still has todo.md (with different content) but excludes it.
+        let mut client_engine = seeded_engine(
+            cdir.path(),
+            "cli",
+            &[
+                ("notes/a.md", b"a" as &[u8]),
+                ("todo.md", b"todo-old"),
+            ],
+        )
+        .await;
+        let client_scope = Scope {
+            entries: Vec::new(),
+            excludes: vec!["todo.md".into()],
+        };
+
+        let (client_peer, server_peer) = peer_pair().await;
+        let srv = tokio::spawn(async move {
+            run_server_session(&mut server_engine, &server_peer, &Scope::everything(), false)
+                .await
+                .unwrap()
+        });
+        let report = run_client_session(&mut client_engine, &client_peer, &client_scope)
+            .await
+            .unwrap();
+        srv.await.unwrap();
+
+        // Exclusion beats the server tombstone: the local copy survives.
+        assert!(cdir.path().join("todo.md").exists());
+        assert_eq!(
+            std::fs::read(cdir.path().join("todo.md")).unwrap(),
+            b"todo-old"
+        );
+        assert_eq!(report.deleted_files, 0);
+    }
 }

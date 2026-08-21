@@ -170,12 +170,20 @@ struct RestoreSnapshotRequest {
 
 #[derive(Deserialize)]
 struct SetScopeRequest {
+    #[serde(default)]
     entries: Vec<ScopeEntry>,
+    /// Per-file exclusions. Absent = leave the stored list untouched;
+    /// present (even empty) = replace it.
+    #[serde(default)]
+    excludes: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
 struct SetDeviceScopeRequest {
+    #[serde(default)]
     entries: Vec<ScopeEntry>,
+    #[serde(default)]
+    excludes: Option<Vec<String>>,
     #[serde(default)]
     read_only: Option<bool>,
 }
@@ -726,12 +734,14 @@ async fn handle_scopes(state: State<Arc<AppState>>) -> Json<serde_json::Value> {
             fp.clone(),
             serde_json::json!({
                 "entries": engine.device_scope(fp),
+                "excludes": engine.device_exclusions(fp),
                 "read_only": engine.device_read_only(fp),
             }),
         );
     }
     Json(serde_json::json!({
         "shared": engine.shared_scope(),
+        "shared_excludes": engine.shared_exclusions(),
         "devices": serde_json::Value::Object(devices),
     }))
 }
@@ -748,11 +758,20 @@ async fn handle_set_shared_scope(
     if let Err(e) = engine.set_shared_scope(&req.entries) {
         return Json(serde_json::json!({ "error": e.to_string() }));
     }
+    if let Some(excludes) = &req.excludes {
+        if let Err(e) = engine.set_shared_exclusions(excludes) {
+            return Json(serde_json::json!({ "error": e.to_string() }));
+        }
+    }
     drop(guard);
     record_activity(
         &state,
         "scope_updated",
-        format!("shared selection: {} entries", req.entries.len()),
+        format!(
+            "shared selection: {} entries, {} excluded",
+            req.entries.len(),
+            req.excludes.as_ref().map(|e| e.len()).unwrap_or(0)
+        ),
     )
     .await;
     refresh_status_cache(&state).await;
@@ -778,6 +797,11 @@ async fn handle_set_device_scope(
     };
     if let Err(e) = engine.set_device_scope(&fingerprint, &req.entries) {
         return Json(serde_json::json!({ "error": e.to_string() }));
+    }
+    if let Some(excludes) = &req.excludes {
+        if let Err(e) = engine.set_device_exclusions(&fingerprint, excludes) {
+            return Json(serde_json::json!({ "error": e.to_string() }));
+        }
     }
     if let Some(ro) = req.read_only {
         if let Err(e) = engine.set_device_read_only(&fingerprint, ro) {

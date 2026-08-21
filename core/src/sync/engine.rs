@@ -414,9 +414,7 @@ impl SyncEngine {
 
     /// Extra paths a specific approved device subscribes to.
     pub fn device_scope(&self, fingerprint: &str) -> Vec<ScopeEntry> {
-        self.store
-            .get_device_scope(fingerprint)
-            .unwrap_or_default()
+        self.store.get_device_scope(fingerprint).unwrap_or_default()
     }
 
     /// Replace a device's optional scope (empty = shared selection only).
@@ -461,7 +459,11 @@ impl SyncEngine {
             .unwrap_or(false)
     }
 
-    pub fn set_device_read_only(&self, fingerprint: &str, read_only: bool) -> Result<(), anyhow::Error> {
+    pub fn set_device_read_only(
+        &self,
+        fingerprint: &str,
+        read_only: bool,
+    ) -> Result<(), anyhow::Error> {
         Ok(self.store.set_device_read_only(fingerprint, read_only)?)
     }
 
@@ -485,9 +487,7 @@ impl SyncEngine {
     /// server — the server decides what it sends, this decides what we keep.
     pub fn local_scope(&self) -> Scope {
         match self.store.get_config("local_scope").ok().flatten() {
-            Some(raw) => {
-                serde_json::from_str(&raw).unwrap_or_else(|_| Scope::everything())
-            }
+            Some(raw) => serde_json::from_str(&raw).unwrap_or_else(|_| Scope::everything()),
             None => Scope::everything(),
         }
     }
@@ -914,7 +914,10 @@ mod tests {
         assert!(!scope.is_everything());
         let manifest = engine.build_manifest_scoped(&scope);
         assert_eq!(manifest.files.len(), 1);
-        assert_eq!(manifest.files[0].relative_path.to_string_lossy(), "notes/a.md");
+        assert_eq!(
+            manifest.files[0].relative_path.to_string_lossy(),
+            "notes/a.md"
+        );
 
         // Folder include + file exclusion inside it.
         let scope = Scope {
@@ -926,7 +929,10 @@ mod tests {
         };
         let manifest = engine.build_manifest_scoped(&scope);
         assert_eq!(manifest.files.len(), 1);
-        assert_eq!(manifest.files[0].relative_path.to_string_lossy(), "notes/a.md");
+        assert_eq!(
+            manifest.files[0].relative_path.to_string_lossy(),
+            "notes/a.md"
+        );
 
         // The full index is untouched by scoping — exclusion is a pure filter.
         assert_eq!(engine.build_manifest().files.len(), 3);

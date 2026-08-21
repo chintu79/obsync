@@ -382,7 +382,11 @@ async fn handle_server_operation(
                 // the chunks so the protocol framing stays in sync, then skip.
                 warn!(
                     "Skipping {} push of {} (out of scope or read-only device)",
-                    if read_only { "read-only" } else { "out-of-scope" },
+                    if read_only {
+                        "read-only"
+                    } else {
+                        "out-of-scope"
+                    },
                     op.relative_path
                 );
                 drain_file_data(peer).await?;
@@ -428,7 +432,11 @@ async fn handle_server_operation(
             if !allowed {
                 warn!(
                     "Skipping {} delete of {}",
-                    if read_only { "read-only" } else { "out-of-scope" },
+                    if read_only {
+                        "read-only"
+                    } else {
+                        "out-of-scope"
+                    },
                     op.relative_path
                 );
                 return Ok(false);
@@ -588,11 +596,7 @@ mod tests {
     }
 
     /// Engine over a temp vault pre-seeded with files and fully indexed.
-    async fn seeded_engine(
-        dir: &Path,
-        id: &str,
-        files: &[(&str, &[u8])],
-    ) -> SyncEngine {
+    async fn seeded_engine(dir: &Path, id: &str, files: &[(&str, &[u8])]) -> SyncEngine {
         for (rel, data) in files {
             let p = dir.join(rel);
             if let Some(parent) = p.parent() {
@@ -600,9 +604,7 @@ mod tests {
             }
             std::fs::write(p, data).unwrap();
         }
-        let mut engine = SyncEngine::new(dir.to_owned(), id.into())
-            .await
-            .unwrap();
+        let mut engine = SyncEngine::new(dir.to_owned(), id.into()).await.unwrap();
         engine.initial_index().await.unwrap();
         engine
     }
@@ -733,10 +735,7 @@ mod tests {
         let mut client_engine = seeded_engine(
             cdir.path(),
             "cli",
-            &[
-                ("notes/a.md", b"a" as &[u8]),
-                ("todo.md", b"todo-old"),
-            ],
+            &[("notes/a.md", b"a" as &[u8]), ("todo.md", b"todo-old")],
         )
         .await;
         let client_scope = Scope {
@@ -746,9 +745,14 @@ mod tests {
 
         let (client_peer, server_peer) = peer_pair().await;
         let srv = tokio::spawn(async move {
-            run_server_session(&mut server_engine, &server_peer, &Scope::everything(), false)
-                .await
-                .unwrap()
+            run_server_session(
+                &mut server_engine,
+                &server_peer,
+                &Scope::everything(),
+                false,
+            )
+            .await
+            .unwrap()
         });
         let report = run_client_session(&mut client_engine, &client_peer, &client_scope)
             .await

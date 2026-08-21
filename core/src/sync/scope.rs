@@ -257,8 +257,8 @@ mod tests {
     #[test]
     fn test_serde_backward_compat() {
         // Pre-exclusion JSON (no `excludes` key) loads with an empty list.
-        let old: Scope = serde_json::from_str(r#"{"entries":[{"kind":"folder","path":"notes"}]}"#)
-            .unwrap();
+        let old: Scope =
+            serde_json::from_str(r#"{"entries":[{"kind":"folder","path":"notes"}]}"#).unwrap();
         assert_eq!(old.excludes.len(), 0);
         assert!(old.allows(Path::new("notes/a.md")));
         // New JSON round-trips.

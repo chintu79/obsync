@@ -321,9 +321,9 @@ impl Store {
     /// Extra paths a specific approved device subscribes to, on top of the
     /// shared selection.
     pub fn get_device_scope(&self, fingerprint: &str) -> SqlResult<Vec<ScopeEntry>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT path, kind FROM device_scopes WHERE fingerprint = ?1 ORDER BY path",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, kind FROM device_scopes WHERE fingerprint = ?1 ORDER BY path")?;
         let rows = stmt.query_map(params![fingerprint], |row| {
             Ok(ScopeEntry {
                 path: row.get(0)?,
@@ -356,9 +356,9 @@ impl Store {
     /// vault-wide list, otherwise an approved device's fingerprint. Excluded
     /// paths never sync regardless of folder/file includes.
     pub fn get_scope_exclusions(&self, owner: &str) -> SqlResult<Vec<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT path FROM scope_exclusions WHERE fingerprint = ?1 ORDER BY path",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM scope_exclusions WHERE fingerprint = ?1 ORDER BY path")?;
         let rows = stmt.query_map(params![owner], |row| row.get::<_, String>(0))?;
         rows.collect()
     }
@@ -627,7 +627,10 @@ mod tests {
             .unwrap();
         let mut got = store.get_shared_exclusions().unwrap();
         got.sort();
-        assert_eq!(got, vec!["notes/secret.md".to_string(), "todo.md".to_string()]);
+        assert_eq!(
+            got,
+            vec!["notes/secret.md".to_string(), "todo.md".to_string()]
+        );
 
         // Replace-whole-set semantics: an empty list clears.
         store.set_shared_exclusions(&[]).unwrap();
@@ -652,7 +655,9 @@ mod tests {
         assert!(store.get_device_exclusions("fp-c").unwrap().is_empty());
 
         // Shared list is independent of device lists.
-        store.set_shared_exclusions(&["shared-only.md".into()]).unwrap();
+        store
+            .set_shared_exclusions(&["shared-only.md".into()])
+            .unwrap();
         assert_eq!(
             store.get_shared_exclusions().unwrap(),
             vec!["shared-only.md".to_string()]

@@ -125,7 +125,6 @@ async fn build_status(state: &Arc<AppState>) -> serde_json::Value {
         act.iter().rev().find(|a| a.kind == "sync").map(|a| a.ts)
     };
 
-
     serde_json::json!({
         "vault": vault,
         "device": device,
@@ -670,12 +669,7 @@ async fn handle_devices(state: State<Arc<AppState>>) -> Json<Vec<serde_json::Val
         match guard.as_ref() {
             Some(e) => approved
                 .keys()
-                .map(|fp| {
-                    (
-                        fp.clone(),
-                        (e.device_scope(fp), e.device_read_only(fp)),
-                    )
-                })
+                .map(|fp| (fp.clone(), (e.device_scope(fp), e.device_read_only(fp))))
                 .collect(),
             None => HashMap::new(),
         }

@@ -944,8 +944,9 @@ function scopeEntriesFromDraft(set) {
 
 function renderScopeSummary() {
   const s = state.scopes || {};
-  const n = (s.shared || []).length;
-  const x = (s.shared_excludes || []).length;
+  // Prefer the live draft so clicks update the chip before Save.
+  const n = scopeDrafts.shared ? scopeDrafts.shared.size : (s.shared || []).length;
+  const x = scopeExcludes.shared ? scopeExcludes.shared.size : (s.shared_excludes || []).length;
   let text = n ? n + ' item' + (n === 1 ? '' : 's') + ' shared' : 'whole vault';
   if (x) text += ' · ' + x + ' excluded';
   $('scopeSummary').textContent = text;
@@ -1089,6 +1090,7 @@ async function clearScope(fp) {
 /** Re-render just one scope list (shared or device) without collapsing
  *  open <details> elements. */
 function rerenderScopeList(fp) {
+  renderScopeSummary();
   if (fp === 'shared') {
     renderScopeRows($('scopeSharedList'), scopeDrafts.shared, scopeExcludes.shared, $('scopeSharedSearch').value);
     return;
